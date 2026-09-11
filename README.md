@@ -377,6 +377,10 @@ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/ai_world
 **Q：PDF 上传提示「未提取到文本」？**
 扫描版 PDF 没有文本层，需要先做 OCR。
 
+**Q：用 Python 脚本自测接口时报 502 空响应？**
+本机开着系统代理（例如 Clash 的 `127.0.0.1:57777`）时，`httpx` / `requests` 会把 `127.0.0.1` 的请求也送进代理，返回 502。
+测试脚本已用 `trust_env=False` 规避；自己的脚本加同样参数，或把 `127.0.0.1` 加入代理白名单。
+
 **Q：端口被占用？**
 后端：`uvicorn app.main:app --port 8001`；前端：修改 `frontend/vite.config.js` 的 `server.port`，并同步 `VITE_API_TARGET`。
 

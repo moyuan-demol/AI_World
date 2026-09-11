@@ -36,7 +36,10 @@ def headers(token: str) -> dict[str, str]:
 
 
 def main() -> int:
-    client = httpx.Client(base_url=BASE_URL, timeout=180.0)
+    # trust_env=False: 不要使用系统/环境里的 HTTP 代理。
+    # 否则当本机开着代理（例如 Clash 的 127.0.0.1:xxxx）时，
+    # 连 127.0.0.1 的请求也会被送进代理，得到 502 空响应。
+    client = httpx.Client(base_url=BASE_URL, timeout=180.0, trust_env=False)
 
     print("\n== 1. 健康检查 ==")
     response = client.get("/api/health")

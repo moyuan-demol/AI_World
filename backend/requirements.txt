@@ -1,5 +1,8 @@
-fastapi==0.115.5
-uvicorn[standard]==0.32.1
+# 版本组合已通过 tests/smoke_test.py 的 29 项端到端验证
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+# starlette 必须显式固定：1.x 与旧版 fastapi 不兼容，0.47.3 为已验证版本
+starlette==0.47.3
 sqlalchemy==2.0.36
 greenlet==3.1.1
 aiosqlite==0.20.0
