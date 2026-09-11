@@ -91,6 +91,24 @@ def main() -> int:
     else:
         print("  [SKIP] 未找到议题输入框")
 
+    print("\n== 6. 自愈：把 AI 伙伴全删光后应自动恢复 ==")
+    at.sidebar.radio[0].set_value("AI伙伴").run()
+    delete_buttons = [item for item in at.button if item.label == "删除"]
+    total = len(delete_buttons)
+    print("      当前角色数: " + str(total))
+    for _ in range(total):
+        remaining = [item for item in at.button if item.label == "删除"]
+        if not remaining:
+            break
+        remaining[0].click().run()
+    rendered = " ".join(str(getattr(item, "value", "")) for item in at.markdown)
+    if "张医生" in rendered and "李工" in rendered:
+        print("  [PASS] 角色被删空后自动恢复预置角色")
+    else:
+        FAILURES.append("自愈失败：预置角色未恢复")
+        print("  [FAIL] 自愈失败：预置角色未恢复")
+    check("自愈后页面无异常", at)
+
     print("\n" + "=" * 56)
     if FAILURES:
         print("FAILED: " + str(len(FAILURES)))

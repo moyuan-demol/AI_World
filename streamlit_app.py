@@ -157,6 +157,18 @@ def api_delete_character(user_id: int, character_id: int) -> None:
     db_call(handler)
 
 
+def api_ensure_default_characters(user_id: int) -> int:
+    """自愈：公网演示站可能被访客把 AI 伙伴全删光。
+
+    每次运行都检查一次，若一个都不剩就重新生成预置角色，
+    保证任何人任何时候点开都是完整体验。已存在时开销仅一次 COUNT 查询。
+    """
+    async def handler(session):
+        return await CharacterService(session).ensure_defaults(user_id)
+
+    return db_call(handler)
+
+
 def api_list_knowledge(user_id: int) -> list[dict]:
     async def handler(session):
         rows = await KnowledgeService(session).list(user_id)
@@ -671,6 +683,11 @@ def main() -> None:
     password_gate()
     context = bootstrap()
     user_id = context["user_id"]
+
+    # 自愈：演示数据被删空时自动恢复预置角色
+    if api_ensure_default_characters(user_id) > 0:
+        st.toast("检测到演示数据被清空，已自动恢复初始角色", icon="♻️")
+
     page = sidebar(user_id, context["username"])
 
     if page == "我的世界":
