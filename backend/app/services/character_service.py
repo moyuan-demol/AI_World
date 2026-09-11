@@ -1,0 +1,91 @@
+"""AI companion (character) business logic."""
+
+from __future__ import annotations
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.errors import NotFoundError
+from app.models.character import Character
+from app.repositories.character_repository import CharacterRepository
+from app.schemas.character import CharacterCreate, CharacterUpdate
+
+DEFAULT_CHARACTERS: list[dict[str, str]] = [
+    {
+        "name": "张医生",
+        "role": "医学专家",
+        "personality": "严谨、耐心、循证",
+        "expertise": "医疗 AI、临床决策支持、医疗合规",
+        "speaking_style": "专业、克制，先给结论再给依据",
+        "system_prompt": "回答医疗相关问题时必须提示不能替代执业医师的诊断，涉及用药请给出循证依据。",
+    },
+    {
+        "name": "李工",
+        "role": "技术架构师",
+        "personality": "直接、结构化、重视工程细节",
+        "expertise": "系统架构、大模型应用、性能与成本优化",
+        "speaking_style": "先给方案对比表，再给推荐方案与实施步骤",
+        "system_prompt": "优先考虑可落地性与成本，明确指出技术风险与验证方式。",
+    },
+    {
+        "name": "王顾问",
+        "role": "商业顾问",
+        "personality": "数据驱动、关注回报",
+        "expertise": "市场规模测算、竞品分析、商业模式与 ROI",
+        "speaking_style": "用量化数据说话，善用分层结论",
+        "system_prompt": "无法获取真实数据时请说明假设前提，不要编造具体数字。",
+    },
+]
+
+
+class CharacterService:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.characters = CharacterRepository(session)
+
+    async def create(self, user_id: int, payload: CharacterCreate) -> Character:
+        character = await self.characters.create(
+            user_id=user_id,
+            name=payload.name,
+            role=payload.role,
+            personality=payload.personality,
+            expertise=payload.expertise,
+            speaking_style=payload.speaking_style,
+            system_prompt=payload.system_prompt,
+        )
+        await self.session.commit()
+        return character
+
+    async def list(self, user_id: int) -> list[Character]:
+        return await self.characters.list_by_user(user_id)
+
+    async def get(self, user_id: int, character_id: int) -> Character:
+        character = await self.characters.get_for_user(character_id, user_id)
+        if character is None:
+            raise NotFoundError("AI 伙伴不存在或无权访问")
+        return character
+
+    async def update(self, user_id: int, character_id: int, payload: CharacterUpdate) -> Character:
+        character = await self.get(user_id, character_id)
+        values = payload.model_dump(exclude_unset=True, exclude_none=True)
+        if values:
+            character = await self.characters.update(character, **values)
+        await self.session.commit()
+        return character
+
+    async def delete(self, user_id: int, character_id: int) -> None:
+        character = await self.get(user_id, character_id)
+        await self.characters.delete(character)
+        await self.session.commit()
+
+    async def count(self, user_id: int) -> int:
+        return await self.characters.count_by_user(user_id)
+
+    async def ensure_defaults(self, user_id: int) -> int:
+        """Seed the starter companions for a brand new account."""
+        existing = await self.characters.count_by_user(user_id)
+        if existing > 0:
+            return 0
+        for preset in DEFAULT_CHARACTERS:
+            await self.characters.create(user_id=user_id, **preset)
+        await self.session.commit()
+        return len(DEFAULT_CHARACTERS)

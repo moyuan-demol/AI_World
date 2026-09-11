@@ -1,0 +1,33 @@
+# Render Blueprint：免费托管 FastAPI 后端
+# 用法：Render 控制台 -> New -> Blueprint -> 选择本仓库 -> Apply
+services:
+  - type: web
+    name: ai-world-api
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Render 自动生成随机 JWT 密钥，不用手工填
+      - key: JWT_SECRET
+        generateValue: true
+      # 下面两项在 Render 控制台里填（不要写进仓库）
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: DATA_DIR
+        value: /app/data
+      - key: UPLOAD_DIR
+        value: /app/data/uploads
+      - key: EMBEDDING_PROVIDER
+        value: local
+      - key: EMBEDDING_DIM
+        value: "512"
+      - key: ALLOWED_EXTENSIONS
+        value: .pdf,.txt,.md,.docx
+      - key: MAX_UPLOAD_MB
+        value: "20"

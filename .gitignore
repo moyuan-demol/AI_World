@@ -1,0 +1,31 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# ---- Node ----
+node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-error.log*
+
+# ---- Env & secrets ----
+.env
+.env.local
+backend/.env
+
+# ---- Data / runtime ----
+data/*.db
+data/*.db-journal
+data/uploads/
+*.log
+
+# ---- Editor / OS ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

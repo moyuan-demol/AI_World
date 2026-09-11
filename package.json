@@ -1,0 +1,17 @@
+{
+  "name": "ai-world",
+  "private": true,
+  "version": "1.0.0",
+  "description": "AI World - 个人/企业级 AI 智能空间系统 (React + FastAPI)",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,magenta \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "python -m uvicorn app.main:app --reload --port 8000 --app-dir backend",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "install:frontend": "npm --prefix frontend install",
+    "build": "npm --prefix frontend run build",
+    "preview": "npm --prefix frontend run preview"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
