@@ -4,6 +4,8 @@
 
 本项目是一个**完整可运行的工程**（不是代码片段），包含 React 前端、FastAPI 后端、SQLite 数据库、RAG 检索与多 Agent 圆桌。
 
+**在线演示（永久域名，电脑关机也能访问）：** https://aiworld.streamlit.app
+
 ---
 
 ## 一、功能一览（Phase 1 已全部完成）
