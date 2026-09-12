@@ -810,21 +810,22 @@ def kb_tree(user_id: int) -> list[dict]:
 
     walk(None, 0)
     for item in bases:  # 兜底：父节点缺失的孤儿节点
-        if item["id"] not in seen:
+        if item.get("id", -1) not in seen:
             ordered.append({"item": item, "depth": 0})
-            seen.add(item["id"])
+            seen.add(item.get("id", -1))
     return ordered
 
 
 def kb_label_map(user_id: int) -> dict:
     """{id: 带缩进的显示名}（文件夹用 📁，叶子用 📄）。"""
     tree = kb_tree(user_id)
-    has_child = {node["item"]["parent_id"] for node in tree}
+    # 防御式取值：即使云端模块版本落后（未返回 parent_id）也不会 KeyError
+    has_child = {node["item"].get("parent_id") for node in tree}
     return {
-        node["item"]["id"]: "　" * node["depth"]
-        + ("📁 " if node["item"]["id"] in has_child else "📄 ")
-        + node["item"]["name"]
-        + "（#" + str(node["item"]["id"]) + "）"
+        node["item"].get("id", -1): "　" * node["depth"]
+        + ("📁 " if node["item"].get("id", -1) in has_child else "📄 ")
+        + str(node["item"].get("name", "未命名"))
+        + "（#" + str(node["item"].get("id", -1)) + "）"
         for node in tree
     }
 
