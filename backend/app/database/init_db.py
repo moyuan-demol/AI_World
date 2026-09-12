@@ -24,7 +24,14 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "summary_upto_id": "INTEGER NOT NULL DEFAULT 0",
     },
     "messages": {"embedding": "TEXT NOT NULL DEFAULT '[]'"},
-    "knowledge_bases": {"parent_id": "INTEGER"},
+    "knowledge_bases": {
+        "parent_id": "INTEGER",
+        # 公共库开关 + 回收站（软删除）时间。默认值用 FALSE 而不是 0：
+        # SQLite 与 PostgreSQL 都认 FALSE，而 PG 不接受布尔列的 DEFAULT 0。
+        "is_public": "BOOLEAN NOT NULL DEFAULT FALSE",
+        "deleted_at": "DATETIME",
+    },
+    "documents": {"deleted_at": "DATETIME"},
 }
 
 

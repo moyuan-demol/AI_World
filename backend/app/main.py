@@ -17,6 +17,8 @@ from app.api.routes import api_router
 from app.config.settings import settings
 from app.core.errors import ServiceError
 from app.database.init_db import init_db
+from app.database.session import SessionLocal
+from app.services.demo_seed import ensure_public_demo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +32,12 @@ DEFAULT_JWT_SECRET = "ai-world-dev-secret-change-me"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # 公共示例库：幂等种子数据（已存在则跳过），失败也绝不影响服务启动
+    async with SessionLocal() as session:
+        try:
+            await ensure_public_demo(session)
+        except Exception:  # noqa: BLE001
+            logger.exception("公共示例库初始化失败（不影响服务启动）")
     if settings.jwt_secret == DEFAULT_JWT_SECRET:
         logger.warning("安全提示：JWT_SECRET 仍为默认值，正式部署前请在 .env 中更换为随机字符串。")
     if not settings.ai_configured:

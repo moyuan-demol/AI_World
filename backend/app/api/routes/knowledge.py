@@ -51,6 +51,12 @@ async def upload_document(
         await file.close()
 
 
+@router.get("/public", response_model=list[KnowledgeOut], summary="公共知识库列表（所有人可查）")
+async def list_public_knowledge(session: SessionDep, user: CurrentUser) -> list[KnowledgeOut]:
+    # 注意：必须注册在 /{knowledge_id} 之前，否则 "public" 会被当成 int 路径参数
+    return await KnowledgeService(session).list_public()
+
+
 @router.get("/{knowledge_id}", response_model=KnowledgeOut, summary="知识库详情")
 async def get_knowledge(knowledge_id: int, session: SessionDep, user: CurrentUser) -> KnowledgeOut:
     return await KnowledgeService(session).get_out(user.id, knowledge_id)

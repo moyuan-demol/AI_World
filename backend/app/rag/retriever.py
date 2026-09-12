@@ -190,8 +190,42 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     return dot / (math.sqrt(left_norm) * math.sqrt(right_norm))
 
 
+async def resolve_visible_knowledge_ids(
+    knowledge: KnowledgeRepository,
+    user_id: int,
+    knowledge_id: int | None = None,
+    knowledge_ids: list[int] | None = None,
+) -> list[int] | None:
+    """解析"我能检索哪些知识库"，**唯一一份范围规则**（Retriever 与 ChatService 共用）。
+
+    范围 = 我自己的未删除知识库 + 全部未删除的公共库。
+    为什么要有公共库：公共示例库归属站长账号，但所有人都应当能检索到它。
+
+    返回 None 表示"显式指定的 knowledge_id 不可见"（调用方决定抛 404 还是返回空），
+    这样两条业务链路既能共用规则、又能保留各自原有的错误语义。
+    """
+    own = await knowledge.list_by_user(user_id)
+    public = await knowledge.list_public()
+    visible: list[int] = []
+    seen: set[int] = set()
+    for base in list(own) + list(public):
+        if base.id not in seen:
+            seen.add(base.id)
+            visible.append(base.id)
+
+    if knowledge_id is not None:
+        if knowledge_id not in seen:
+            return None
+        # 分级：选中文件夹 / 公共库时自动包含其下所有子库
+        return await knowledge.list_subtree_ids([knowledge_id])
+    if knowledge_ids:
+        scoped = [item for item in knowledge_ids if item in seen]
+        return await knowledge.list_subtree_ids(scoped)
+    return visible
+
+
 class Retriever:
-    """Cosine similarity search constrained to the current user's data."""
+    """Hybrid retrieval (vector + BM25) over "my knowledge bases + all public ones"."""
 
     def __init__(
         self, session: AsyncSession, embedding_config: EmbeddingConfig | None = None
@@ -207,22 +241,17 @@ class Retriever:
         knowledge_id: int | None,
         knowledge_ids: list[int] | None = None,
     ) -> list[int]:
-        """确定检索范围（永远限定在该用户自己的知识库内）。
+        """确定检索范围（我自己的知识库 + 全部公共知识库；已删除的一律排除）。
 
         优先级：显式指定单个 knowledge_id > 传入的 knowledge_ids（角色知识边界）
-                > 该用户的全部知识库
+                > 我的全部知识库 + 全部公共库
         """
-        bases = await self.knowledge.list_by_user(user_id)
-        owned = {base.id for base in bases}
-        if knowledge_id is not None:
-            if knowledge_id not in owned:
-                raise NotFoundError("知识库不存在或无权访问")
-            # 分级：选中文件夹时自动包含其下所有子库
-            return await self.knowledge.list_descendant_ids(user_id, [knowledge_id])
-        if knowledge_ids:
-            scoped = [item for item in knowledge_ids if item in owned]
-            return await self.knowledge.list_descendant_ids(user_id, scoped)
-        return [base.id for base in bases]
+        resolved = await resolve_visible_knowledge_ids(
+            self.knowledge, user_id, knowledge_id, knowledge_ids
+        )
+        if resolved is None:
+            raise NotFoundError("知识库不存在或无权访问")
+        return resolved
 
     async def search(
         self,

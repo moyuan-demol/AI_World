@@ -27,4 +27,6 @@ class Document(Base):
     chunk_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    # 回收站（软删除）：非空 = 已删除。检索 / 计数 / 列表一律排除。
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

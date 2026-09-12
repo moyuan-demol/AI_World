@@ -133,7 +133,9 @@ from app.services.admin_service import AdminService  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402
 from app.services.character_service import CharacterService  # noqa: E402
 from app.services.chat_service import ChatService  # noqa: E402
+from app.services.demo_seed import ensure_public_demo  # noqa: E402
 from app.services.knowledge_service import KnowledgeService  # noqa: E402
+from app.services.recycle_service import RecycleService  # noqa: E402
 from app.services.roundtable_service import RoundtableService  # noqa: E402
 from app.services.usage_service import UsageService  # noqa: E402
 
@@ -175,10 +177,21 @@ def db_call(handler):
     return run_async(_wrapper())
 
 
+async def _ensure_public_demo_task() -> dict:
+    """公共示例库（幂等种子数据）：用独立 session，避免和请求 session 互相影响。"""
+    async with SessionLocal() as session:
+        return await ensure_public_demo(session)
+
+
 @st.cache_resource(show_spinner="正在初始化 AI World ...")
 def bootstrap() -> bool:
-    """建表（幂等）。当前用户由登录态决定，不再自动登录、也没有共享演示账号。"""
+    """建表（幂等）+ 公共示例库（幂等）。当前用户由登录态决定，不再自动登录。"""
     run_async(init_db())
+    try:
+        run_async(_ensure_public_demo_task())
+    except Exception:
+        # 种子数据失败绝不能挡住应用启动：没有公共库，其它功能照常可用
+        pass
     return True
 
 
@@ -415,14 +428,64 @@ def api_list_knowledge(user_id: int) -> list[dict]:
     return db_call(handler)
 
 
-def api_create_knowledge(user_id: int, name: str, description: str, parent_id=None) -> dict:
+def api_create_knowledge(
+    user_id: int, name: str, description: str, parent_id=None, is_public: bool = False
+) -> dict:
     async def handler(session):
         row = await KnowledgeService(session).create(
             user_id,
-            KnowledgeCreate(name=name, description=description, parent_id=parent_id),
+            KnowledgeCreate(
+                name=name, description=description, parent_id=parent_id, is_public=is_public
+            ),
         )
         invalidate_lists()
         return {"id": row.id, "name": row.name, "document_count": row.document_count}
+
+    return db_call(handler)
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def api_list_public_knowledge() -> list[dict]:
+    """公共库列表：所有人可查，与"我的知识库"分开渲染（不属于任何人）。"""
+
+    async def handler(session):
+        rows = await KnowledgeService(session).list_public()
+        return [
+            {
+                "id": row.id,
+                "name": row.name,
+                "description": row.description,
+                "document_count": row.document_count,
+            }
+            for row in rows
+        ]
+
+    return db_call(handler)
+
+
+def api_list_recycle(user_id: int) -> list[dict]:
+    """回收站条目（知识库 + 文档），含删除时间与所属知识库。"""
+
+    async def handler(session):
+        return await RecycleService(session).list_deleted(user_id)
+
+    return db_call(handler)
+
+
+def api_restore_recycle(user_id: int, kind: str, item_id: int) -> dict:
+    async def handler(session):
+        result = await RecycleService(session).restore(user_id, kind, item_id)
+        invalidate_lists()
+        return result
+
+    return db_call(handler)
+
+
+def api_purge_recycle(user_id: int, kind: str, item_id: int) -> dict:
+    async def handler(session):
+        result = await RecycleService(session).purge(user_id, kind, item_id)
+        invalidate_lists()
+        return result
 
     return db_call(handler)
 
@@ -595,6 +658,7 @@ def api_run_roundtable(
 st.set_page_config(page_title="AI World · AI 世界", page_icon="🌍", layout="wide")
 
 MODULES = ["我的世界", "AI伙伴", "知识世界", "AI聊天", "AI圆桌"]
+RECYCLE_PAGE = "🗑 回收站"
 USAGE_PAGE = "📊 用量统计"
 
 # 页面 <-> URL 参数（只放页面名，**绝不放** user_id / token / 知识库 id）
@@ -604,6 +668,7 @@ PAGE_SLUG = {
     "知识世界": "knowledge",
     "AI聊天": "chat",
     "AI圆桌": "roundtable",
+    RECYCLE_PAGE: "recycle",
     USAGE_PAGE: "usage",
 }
 SLUG_PAGE = {slug: label for label, slug in PAGE_SLUG.items()}
@@ -619,7 +684,8 @@ def is_admin_session() -> bool:
 
 
 def nav_items() -> list[str]:
-    items = list(MODULES)
+    # 回收站对所有登录用户可见（每个人只看到自己能处理的条目）
+    items = list(MODULES) + [RECYCLE_PAGE]
     # 站长页只对站长账号可见：普通访客的左侧菜单里完全不存在这一项
     if is_admin_session():
         items.append(USAGE_PAGE)
@@ -1219,6 +1285,37 @@ def page_knowledge(user_id: int) -> None:
     st.caption("上传资料后自动解析、切片、向量化，AI 回答时按相似度检索并标注来源。")
 
     bases = api_list_knowledge(user_id)
+    # 公共库单独一块：它不属于当前用户（归属站长账号），因此绝不混进"我的知识库"列表，
+    # 避免被误当成自己的库删除/改名。所有人可检索；普通用户只能删进回收站，不能彻底删除。
+    public_bases = api_list_public_knowledge()
+    if public_bases:
+        st.subheader("🌍 公共示例库（所有人可查）")
+        st.caption(
+            "站长维护的公共资料，任何账号的检索都会自动包含它。"
+            "普通用户可以把它「移入回收站」（可恢复），**彻底删除只有站长可以执行**。"
+        )
+        for item in public_bases:
+            with st.container(border=True):
+                col1, col2, col3 = st.columns([4, 1, 1])
+                col1.markdown("#### 🌍 " + item["name"])
+                col1.caption(item["description"] or "公共知识库")
+                col2.metric("切片", item["document_count"])
+                if col3.button("移入回收站", key="del_public_kb_" + str(item["id"])):
+                    try:
+                        api_delete_knowledge(user_id, item["id"])
+                    except Exception as error:  # noqa: BLE001
+                        st.error(redact_credentials(type(error).__name__ + ": " + str(error)))
+                    else:
+                        st.success("已移入回收站（可在「🗑 回收站」恢复）")
+                        st.rerun()
+                with st.expander("查看切片内容（只读）"):
+                    documents = api_list_documents(user_id, item["id"], limit=20)
+                    if not documents:
+                        st.caption("没有切片")
+                    for document in documents:
+                        st.caption(document["filename"] + " · #" + str(document["chunk_index"]))
+                        st.text(document["content"][:800])
+        st.divider()
 
     with st.expander("➕ 新建知识库"):
         with st.form("create_kb", clear_on_submit=True):
@@ -1226,25 +1323,41 @@ def page_knowledge(user_id: int) -> None:
             kb_desc = st.text_area("描述", height=70)
             parent_labels = ["（顶层，作为文件夹或独立库）"] + list(kb_label_map(user_id).values())
             parent_pick = st.selectbox("放在哪里（分级）", parent_labels)
+            # 站长才能创建公共库：普通访客连这个选项都看不到（Service 层还会再校验一次）
+            public_pick = (
+                st.checkbox("创建为公共库（所有人可查，仅站长可创建）")
+                if is_admin_session()
+                else False
+            )
             if st.form_submit_button("创建", type="primary"):
                 if not kb_name.strip():
                     st.error("名称不能为空")
                 else:
                     label_to_id = {v: k for k, v in kb_label_map(user_id).items()}
-                    api_create_knowledge(
-                        user_id,
-                        kb_name.strip(),
-                        kb_desc,
-                        label_to_id.get(parent_pick),
-                    )
-                    st.success("已创建知识库")
-                    st.rerun()
+                    try:
+                        api_create_knowledge(
+                            user_id,
+                            kb_name.strip(),
+                            kb_desc,
+                            label_to_id.get(parent_pick),
+                            bool(public_pick),
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        st.error(redact_credentials(type(error).__name__ + ": " + str(error)))
+                    else:
+                        st.success("已创建知识库")
+                        st.rerun()
 
     supported = " / ".join(
         item.lstrip(".").upper() for item in settings.allowed_extension_list
     )
     with st.expander("⬆️ 上传文件（" + supported + "）", expanded=True):
-        options = ["自动创建新知识库"] + list(kb_label_map(user_id).values())
+        # 目标是"我自己的知识库"；站长额外可以把资料传进公共示例库
+        target_map = {label: kid for kid, label in kb_label_map(user_id).items()}
+        if is_admin_session():
+            for item in public_bases:
+                target_map["🌍 " + item["name"]] = item["id"]
+        options = ["自动创建新知识库"] + list(target_map.keys())
         target = st.selectbox("上传到", options)
         uploaded = st.file_uploader(
             "选择文件",
@@ -1256,7 +1369,7 @@ def page_knowledge(user_id: int) -> None:
             else:
                 knowledge_id = None
                 if target != options[0]:
-                    knowledge_id = bases[options.index(target) - 1]["id"]
+                    knowledge_id = target_map.get(target)
                 started = time.perf_counter()
                 try:
                     with st.spinner("解析、切片、向量化中..."):
@@ -1320,6 +1433,67 @@ def page_knowledge(user_id: int) -> None:
                 for document in documents:
                     st.caption(document["filename"] + " · #" + str(document["chunk_index"]))
                     st.text(document["content"][:800])
+
+
+def page_recycle(user_id: int) -> None:
+    st.title("🗑 回收站")
+    st.caption(
+        "删除的知识库与文档会先进入回收站（数据仍在，可恢复）；"
+        "「彻底删除」是物理删除、不可撤销。**公共库内容只有站长能彻底删除**。"
+    )
+
+    items = api_list_recycle(user_id)
+    if not items:
+        st.info("回收站是空的。")
+        return
+
+    knowledge_items = [item for item in items if item["kind"] == "knowledge"]
+    document_items = [item for item in items if item["kind"] == "document"]
+    st.caption(
+        "共 " + str(len(items)) + " 条（知识库 " + str(len(knowledge_items))
+        + " · 文档 " + str(len(document_items)) + "）"
+    )
+
+    for item in items:
+        with st.container(border=True):
+            cols = st.columns([4, 1, 1, 1])
+            if item["kind"] == "knowledge":
+                title = "📚 " + item["name"]
+            else:
+                title = "📄 " + item["name"]
+            if item.get("is_public"):
+                title = title + " · 🌍 公共"
+            cols[0].markdown("#### " + title)
+            detail = "删除时间：" + str(item.get("deleted_at") or "-")
+            if item["kind"] == "document" and item.get("knowledge_name"):
+                detail = detail + " · 所属知识库：" + str(item["knowledge_name"])
+            if item.get("parent_deleted"):
+                detail = detail + "（父知识库也在回收站，恢复/删除会一并处理）"
+            cols[0].caption(detail)
+            cols[1].metric("切片", item.get("document_count", 0))
+
+            if cols[2].button("恢复", key="restore_" + item["kind"] + "_" + str(item["id"])):
+                try:
+                    api_restore_recycle(user_id, item["kind"], item["id"])
+                except Exception as error:  # noqa: BLE001
+                    st.error(redact_credentials(type(error).__name__ + ": " + str(error)))
+                else:
+                    st.success("已恢复：" + item["name"])
+                    st.rerun()
+
+            # 权限提示：普通用户对公共内容不显示"彻底删除"，避免点了才发现被拒
+            if item.get("is_public") and not is_admin_session():
+                cols[3].caption("公共内容仅站长可彻底删除（可恢复）")
+            elif cols[3].button(
+                "彻底删除", key="purge_" + item["kind"] + "_" + str(item["id"])
+            ):
+                try:
+                    api_purge_recycle(user_id, item["kind"], item["id"])
+                except Exception as error:  # noqa: BLE001
+                    st.error(redact_credentials(type(error).__name__ + ": " + str(error)))
+                else:
+                    st.success("已彻底删除（不可恢复）：" + item["name"])
+                    st.rerun()
 
 
 def page_chat(user_id: int) -> None:
@@ -1850,6 +2024,8 @@ def main() -> None:
         page_chat(user_id)
     elif page == "AI圆桌":
         page_roundtable(user_id)
+    elif page == RECYCLE_PAGE:
+        page_recycle(user_id)
     elif page == USAGE_PAGE:
         page_usage(user_id)
 

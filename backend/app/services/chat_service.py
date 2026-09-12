@@ -20,7 +20,12 @@ from app.rag.multi_agent import MultiAgentRag
 from app.rag.query_rewrite import build_rewrite_messages, needs_rewrite, parse_rewritten_queries
 from app.rag.rag_service import RagService
 from app.rag.rerank import rerank
-from app.rag.retriever import RetrievedChunk, cosine_similarity, head_chunks
+from app.rag.retriever import (
+    RetrievedChunk,
+    cosine_similarity,
+    head_chunks,
+    resolve_visible_knowledge_ids,
+)
 from app.tools.web_search import WebSearchTool
 from app.repositories.character_repository import CharacterRepository
 from app.repositories.character_knowledge_repository import CharacterKnowledgeRepository
@@ -379,23 +384,17 @@ class ChatService:
         knowledge_id: int | None,
         scoped_ids: list[int],
     ) -> list[int]:
-        """解析"知识边界"：显式单库 > 角色绑定 > 该用户全部（与 Retriever 完全一致）。
+        """解析"知识边界"：显式单库 > 角色绑定 > 我的全部 + 公共库（与 Retriever 完全一致）。
 
         元信息问句与正文检索必须用同一套边界，否则会出现
         "检索到了某篇文档、元信息里却没有它"的错位。
+        复用 retriever.resolve_visible_knowledge_ids：公共库与软删除的规则只有一份。
         """
-        knowledge_repo = KnowledgeRepository(self.session)
-        bases = await knowledge_repo.list_by_user(user_id)
-        owned = {base.id for base in bases}
-        if knowledge_id is not None:
-            if knowledge_id not in owned:
-                return []
-            return await knowledge_repo.list_descendant_ids(user_id, [knowledge_id])
-        if scoped_ids:
-            return await knowledge_repo.list_descendant_ids(
-                user_id, [item for item in scoped_ids if item in owned]
-            )
-        return [base.id for base in bases]
+        resolved = await resolve_visible_knowledge_ids(
+            KnowledgeRepository(self.session), user_id, knowledge_id, scoped_ids
+        )
+        # None = 显式指定的库不可见：与旧行为一致返回空范围（不抛异常）
+        return resolved or []
 
     async def _meta_documents(
         self,

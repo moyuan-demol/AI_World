@@ -61,12 +61,13 @@ class AdminService:
         )
         knowledge_count = (
             select(func.count(KnowledgeBase.id))
-            .where(KnowledgeBase.user_id == User.id)
+            .where(KnowledgeBase.user_id == User.id, KnowledgeBase.deleted_at.is_(None))
             .scalar_subquery()
         )
+        # 回收站里的内容不算"有效数据"：站长总览与用户自己看到的列表必须一致
         document_count = (
             select(func.count(Document.id))
-            .where(Document.user_id == User.id)
+            .where(Document.user_id == User.id, Document.deleted_at.is_(None))
             .scalar_subquery()
         )
         message_count = (
@@ -168,7 +169,10 @@ class AdminService:
             (
                 await self.session.execute(
                     select(KnowledgeBase)
-                    .where(KnowledgeBase.user_id == user_id)
+                    .where(
+                        KnowledgeBase.user_id == user_id,
+                        KnowledgeBase.deleted_at.is_(None),
+                    )
                     .order_by(KnowledgeBase.id.asc())
                 )
             )
@@ -182,7 +186,10 @@ class AdminService:
         # 每个知识库的切片总数（一次聚合）
         count_rows = await self.session.execute(
             select(Document.knowledge_id, func.count(Document.id))
-            .where(Document.knowledge_id.in_(knowledge_ids))
+            .where(
+                Document.knowledge_id.in_(knowledge_ids),
+                Document.deleted_at.is_(None),
+            )
             .group_by(Document.knowledge_id)
         )
         counts = {int(knowledge_id): int(count) for knowledge_id, count in count_rows.all()}
@@ -196,7 +203,10 @@ class AdminService:
                 func.min(Document.id).label("document_id"),
                 func.min(Document.created_time).label("created_time"),
             )
-            .where(Document.knowledge_id.in_(knowledge_ids))
+            .where(
+                Document.knowledge_id.in_(knowledge_ids),
+                Document.deleted_at.is_(None),
+            )
             .group_by(Document.knowledge_id, Document.filename)
             .order_by(Document.knowledge_id.asc(), func.min(Document.id).asc())
         )
@@ -239,13 +249,14 @@ class AdminService:
         limit = max(1, min(int(limit or 50), 500))
         offset = max(0, int(offset or 0))
         anchor = await self.session.get(Document, document_id)
-        if anchor is None or anchor.user_id != user_id:
+        if anchor is None or anchor.user_id != user_id or anchor.deleted_at is not None:
             raise NotFoundError("文档不存在或不属于该用户")
 
         filters = (
             Document.user_id == user_id,
             Document.knowledge_id == anchor.knowledge_id,
             Document.filename == anchor.filename,
+            Document.deleted_at.is_(None),
         )
         total = await self.session.scalar(select(func.count(Document.id)).where(*filters))
         rows = (
