@@ -13,7 +13,9 @@ from app.ai.prompts import build_character_system_prompt, build_rag_user_message
 from app.config.settings import settings
 from app.core.errors import NotFoundError
 from app.models.chat import Conversation, Message
+from app.rag.embedding import EmbeddingConfig, embed_query
 from app.rag.rag_service import RagService
+from app.rag.retriever import cosine_similarity
 from app.repositories.character_repository import CharacterRepository
 from app.repositories.chat_repository import ConversationRepository, MessageRepository
 from app.repositories.memory_repository import MemoryRepository
@@ -21,18 +23,42 @@ from app.schemas.chat import ChatRequest, ChatResponse, SourceOut
 
 logger = logging.getLogger(__name__)
 
-# 历史窗口、字符预算、记忆条数均可在 .env 配置（HISTORY_LIMIT / HISTORY_CHAR_BUDGET / MEMORY_INJECT_LIMIT）
+# 历史窗口、字符预算、记忆条数均可在 .env 配置
+# （HISTORY_LIMIT / HISTORY_CHAR_BUDGET / MEMORY_INJECT_LIMIT / SUMMARY_ENABLED ...）
+
+
+def parse_memory_items(text: str) -> list[dict]:
+    """从模型输出里稳健地取出 JSON 数组（自动抽取记忆用）。"""
+    if not text:
+        return []
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return []
+    try:
+        data = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
 
 
 class ChatService:
-    def __init__(self, session: AsyncSession, ai_client: AIClient | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        ai_client: AIClient | None = None,
+        embedding_config: EmbeddingConfig | None = None,
+    ) -> None:
         self.session = session
         self.characters = CharacterRepository(session)
         self.conversations = ConversationRepository(session)
         self.messages = MessageRepository(session)
         self.memories = MemoryRepository(session)
-        self.rag = RagService(session)
+        self.rag = RagService(session, embedding_config)
         self.ai = ai_client or get_ai_client()
+        self.embedding_config = embedding_config
 
     # ------------------------------------------------------------------ #
     async def chat(self, user_id: int, payload: ChatRequest) -> ChatResponse:
@@ -52,15 +78,39 @@ class ChatService:
             )
 
         system_prompt = build_character_system_prompt(character)
+
+        # 长记忆第 3 类：长期事实记忆注入
         memory_block = await self._memory_block(user_id, character.id)
         if memory_block:
             system_prompt = system_prompt + "\n\n" + memory_block
 
+        # 长记忆第 1 类：滚动摘要（把滑出窗口的旧消息压成摘要）
+        summary = await self._refresh_summary(conversation, user_id)
+        if summary:
+            system_prompt = system_prompt + "\n\n[此前对话摘要]\n" + summary
+
+        # 近端窗口（条数 + 字符预算）
         history = await self._trimmed_history(conversation.id)
+
+        # 长记忆第 2 类：历史向量检索（召回窗口之外的相关片段）
+        recalled = await self._relevant_history(
+            conversation.id, payload.message, {message.id for message in history}
+        )
+
         prompt = [{"role": "system", "content": system_prompt}]
         for message in history:
             prompt.append({"role": message.role, "content": message.content})
-        prompt.append({"role": "user", "content": build_rag_user_message(payload.message, context_block)})
+
+        user_content = build_rag_user_message(payload.message, context_block)
+        if recalled:
+            lines = [
+                "- " + ("用户" if item.role == "user" else "助手") + "：" + (item.content or "")[:300]
+                for item in recalled
+            ]
+            user_content = (
+                "[历史上与本次提问相关的对话片段]\n" + "\n".join(lines) + "\n\n" + user_content
+            )
+        prompt.append({"role": "user", "content": user_content})
 
         result = await self.ai.chat(
             prompt,
@@ -99,6 +149,14 @@ class ChatService:
         )
         await self.session.commit()
 
+        # 长记忆第 3 类：自动事实抽取（每 N 条消息触发；无 Key 时自动跳过）
+        try:
+            await self._maybe_extract_memories(
+                user_id, character.id, conversation.id, payload.message, result.text
+            )
+        except Exception:
+            logger.exception("auto memory extraction failed")
+
         return ChatResponse(
             answer=result.text,
             conversation_id=conversation.id,
@@ -123,6 +181,156 @@ class ChatService:
         for memory in memories:
             lines.append("- [" + memory.memory_type + "] " + memory.content)
         return "\n".join(lines)
+
+    async def _refresh_summary(self, conversation: Conversation, user_id: int) -> str:
+        """滚动摘要：把滑出窗口的旧消息并入会话摘要（长记忆第 1 件）。"""
+        if not settings.summary_enabled:
+            return conversation.summary or ""
+        window = await self._trimmed_history(conversation.id)
+        window_ids = {message.id for message in window}
+        all_messages = await self.messages.list_by_conversation(conversation.id, limit=2000)
+        upto = conversation.summary_upto_id or 0
+        dropped = [
+            message
+            for message in all_messages
+            if message.id not in window_ids and message.id > upto and (message.content or "").strip()
+        ]
+        if not dropped:
+            return conversation.summary or ""
+
+        transcript = "\n".join(
+            ("用户：" if message.role == "user" else "助手：") + (message.content or "")[:400]
+            for message in dropped
+        )
+        previous = conversation.summary or "（无）"
+        result = await self.ai.chat(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是对话摘要器。把旧摘要与新增对话合并成一段紧凑摘要，"
+                        "必须保留：用户的身份/偏好/目标、已确认结论、未完成待办。只输出摘要正文。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": "旧摘要：\n" + previous + "\n\n新增对话：\n" + transcript,
+                },
+            ],
+            temperature=0.2,
+            offline_fallback=lambda: self._offline_summary(previous, dropped),
+        )
+        conversation.summary = (result.text or "").strip()[:4000]
+        conversation.summary_upto_id = max(message.id for message in dropped)
+        await self.session.commit()
+        return conversation.summary
+
+    @staticmethod
+    def _offline_summary(previous: str, dropped: list[Message]) -> str:
+        head = previous if previous and previous != "（无）" else ""
+        lines = [m.content.strip().replace("\n", " ")[:80] for m in dropped if m.content.strip()]
+        merged = " / ".join(lines[-6:])
+        return ((head + " | ") if head else "") + "（离线摘要）" + merged
+
+    async def _relevant_history(
+        self,
+        conversation_id: int,
+        query: str,
+        exclude_ids: set[int],
+        top_k: int | None = None,
+    ) -> list[Message]:
+        """历史向量检索：从窗口之外的历史里召回相关片段（长记忆第 2 件）。"""
+        if not settings.history_retrieval_enabled or not query.strip():
+            return []
+        scanned = await self.messages.list_recent(
+            conversation_id, limit=max(10, settings.history_retrieval_scan)
+        )
+        candidates = [
+            message
+            for message in scanned
+            if message.id not in exclude_ids and (message.content or "").strip()
+        ]
+        if len(candidates) < 3:
+            return []
+        query_vector = await embed_query(query, self.embedding_config)
+        if not query_vector:
+            return []
+
+        scored: list[tuple[float, Message]] = []
+        dirty = False
+        for message in candidates:
+            try:
+                vector = json.loads(message.embedding or "[]")
+            except json.JSONDecodeError:
+                vector = []
+            if not vector or len(vector) != len(query_vector):
+                vector = await embed_query((message.content or "")[:1000], self.embedding_config)
+                message.embedding = json.dumps(vector)
+                dirty = True
+            score = cosine_similarity(query_vector, vector)
+            if score > 0:
+                scored.append((score, message))
+        if dirty:
+            await self.session.commit()
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [message for _score, message in scored[: (top_k or settings.history_retrieval_top_k)]]
+
+    async def _maybe_extract_memories(
+        self, user_id: int, character_id: int, conversation_id: int, question: str, answer: str
+    ) -> None:
+        """自动事实抽取：每 N 条消息抽 0-3 条长期事实写入 memories（长记忆第 3 件）。"""
+        if not settings.memory_auto_extract or not self.ai.is_configured:
+            return
+        every = settings.memory_extract_every
+        if every <= 0:
+            return
+        total = await self.messages.count_by_conversation(conversation_id)
+        if total % every != 0:
+            return
+        try:
+            result = await self.ai.chat(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是长期记忆抽取器。从这轮对话中提取值得长期记住的用户事实或偏好"
+                            "（身份、目标、偏好、项目信息）。没有就返回空数组。"
+                            "只输出 JSON 数组，元素形如 "
+                            '{"memory_type":"fact|preference|project|history","content":"..."}，'
+                            "最多 3 条，每条不超过 60 字，不要任何解释。"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": "用户：" + question[:500] + "\n助手：" + answer[:500],
+                    },
+                ],
+                temperature=0.1,
+                max_tokens=300,
+            )
+        except Exception:
+            logger.exception("memory extraction failed")
+            return
+
+        items = parse_memory_items(result.text)
+        if not items:
+            return
+        existing = {memory.content for memory in await self.memories.list_by_user(user_id)}
+        created = 0
+        for item in items:
+            content = str(item.get("content", "")).strip()
+            if not content or content in existing:
+                continue
+            await self.memories.create(
+                user_id=user_id,
+                character_id=character_id,
+                memory_type=str(item.get("memory_type") or "fact")[:32],
+                content=content[:500],
+            )
+            created += 1
+        if created:
+            await self.session.commit()
+            logger.info("auto extracted %s memories", created)
 
     async def _trimmed_history(self, conversation_id: int) -> list[Message]:
         """按「条数 + 字符预算」双重裁剪历史。

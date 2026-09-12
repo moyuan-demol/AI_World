@@ -28,6 +28,7 @@ class UserOut(ORMModel):
     id: int
     username: str
     email: str | None = None
+    role: str = "user"
     created_time: datetime | None = None
 
 

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.prompts import build_context_block
 from app.config.settings import settings
 from app.core.errors import ValidationError
-from app.rag.embedding import embed_texts
+from app.rag.embedding import EmbeddingConfig, embed_texts
 from app.rag.loader import load_from_bytes
 from app.rag.retriever import RetrievedChunk, Retriever
 from app.rag.splitter import split_text
@@ -18,10 +18,13 @@ logger = logging.getLogger(__name__)
 
 
 class RagService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, embedding_config: EmbeddingConfig | None = None
+    ) -> None:
         self.session = session
+        self.embedding_config = embedding_config
         self.documents = DocumentRepository(session)
-        self.retriever = Retriever(session)
+        self.retriever = Retriever(session, embedding_config)
 
     async def ingest(self, *, user_id: int, knowledge_id: int, filename: str, data: bytes) -> tuple[int, int]:
         """Parse, split, embed and persist one uploaded file.
@@ -37,7 +40,7 @@ class RagService:
         if not chunks:
             raise ValidationError("文本切片结果为空，请检查文件内容")
 
-        vectors = await embed_texts(chunks)
+        vectors = await embed_texts(chunks, self.embedding_config)
         for index, chunk in enumerate(chunks):
             vector = vectors[index] if index < len(vectors) else []
             await self.documents.create(

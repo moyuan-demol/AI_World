@@ -199,6 +199,19 @@ docker compose up --build
 | `MAX_UPLOAD_MB` | 20 | 单文件大小上限 |
 | `CORS_ORIGINS` | localhost:5173 等 | 允许的前端来源 |
 | `DEMO_USERNAME` / `DEMO_PASSWORD` | demo / demo123 | 演示账号 |
+| `ADMIN_USERNAMES` | 空 | 逗号分隔的管理员用户名；配置后启用 `/api/admin/*`（权限系统） |
+| `SUMMARY_ENABLED` | true | 滚动摘要开关 |
+| `HISTORY_RETRIEVAL_ENABLED` / `HISTORY_RETRIEVAL_TOP_K` | true / 3 | 历史向量检索开关与召回条数 |
+| `MEMORY_AUTO_EXTRACT` / `MEMORY_EXTRACT_EVERY` | true / 6 | 自动事实抽取开关与触发频率 |
+
+---
+
+### 五·一、权限系统（文档 Phase 2）
+
+- `users.role`（`user` / `admin`）+ 环境变量 `ADMIN_USERNAMES`。**默认没有任何管理员**。
+- 管理员专属接口：`GET /api/admin/usage`（全站用量）、`GET /api/admin/usage/recent`（调用明细）、
+  `GET /api/admin/users`（用户列表）。非管理员访问返回 **403**，未登录返回 **401**。
+- 数据隔离是另一层：所有业务查询强制带 `user_id`，与角色无关。
 
 ---
 
@@ -323,19 +336,32 @@ AI 圆桌、记忆系统、跨用户数据隔离、上传安全（扩展名 / �
 - 想要真正的语义检索：`EMBEDDING_PROVIDER=openai` + `EMBEDDING_API_BASE` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL`（如 BGE-M3）。
   > **事实**：DeepSeek 官方**没有** embedding 接口，所以向量化只能用第三方兼容服务或本地实现。
 - 更换向量模型后需要**重新上传文件**（旧向量与新向量不在同一空间，无法比较）。
+- **界面自带入口**：Streamlit 侧边栏「🧠 使用我自己的向量服务」可直接填 API Base / Key / 模型，
+  只在该访客会话内生效（不入库、不写日志、不共享）；未填写则回落到服务端配置或内置离线实现。
 
-### 八·三、上下文与记忆（重要限制，请务必了解）
+### 八·三、长记忆三件套（已实现）
 
-| 机制 | 现状 | 限制 |
+每次请求的 prompt 由这几部分拼成，每一部分都有明确预算，不会无限膨胀：
+
+| 组成 | 机制 | 参数 |
 | --- | --- | --- |
-| 对话历史 | 最近 `HISTORY_LIMIT`（12）条 + `HISTORY_CHAR_BUDGET`（6000 字符）预算 | **超出预算的最旧消息会被丢弃**，不是无限记忆 |
-| 长期记忆 | Memory 表，按「角色专属 + 全局」取 `MEMORY_INJECT_LIMIT`（5）条注入 system prompt | 需显式写入（`/api/memories`）；按写入时间取，非相关度 |
-| 知识库片段 | 每次检索 Top-K 片段，总长受 `MAX_CONTEXT_CHARS` 限制 | 与对话历史相互独立 |
+| 角色设定 | 身份 / 人格 / 专长 / System Prompt | — |
+| 长期事实记忆 | 角色专属 + 全局记忆注入 system prompt | `MEMORY_INJECT_LIMIT`（5） |
+| 滚动摘要 | 滑出窗口的旧消息压缩成摘要，存 `conversations.summary` | `SUMMARY_ENABLED` |
+| 近端窗口 | 最近 N 条 + 字符预算 | `HISTORY_LIMIT`（12）/ `HISTORY_CHAR_BUDGET`（6000） |
+| 历史向量召回 | 窗口之外的旧消息按余弦相似度召回 Top-K | `HISTORY_RETRIEVAL_TOP_K`（3） |
+| 知识库片段 | 文档 Top-K 片段 | `RETRIEVAL_TOP_K` / `MAX_CONTEXT_CHARS` |
 
-**结论：长对话一定会遗忘早期内容。** 要长期记住事实，请写入记忆表。想更强可升级：
+**自动事实抽取**：每 `MEMORY_EXTRACT_EVERY`（6）条消息，让模型抽取 0~3 条用户事实/偏好写入 `memories` 表；
+`MEMORY_AUTO_EXTRACT=false` 可关闭（需要可用的模型 Key，离线演示模式会自动跳过）。
 
-1. **滚动摘要（rolling summary）**：上下文超预算时，让模型把旧消息压缩成摘要替换原文（成本：多一次 LLM 调用）
-2. **历史 RAG 化**：把历史消息也切片向量化，按相关度检索注入（长对话最佳，实现最复杂）
+**仍然存在的限制（如实说明）**：
+
+- 摘要上限 4000 字符，极长对话仍会丢细节
+- 历史召回的精度取决于向量质量：内置离线哈希向量只能按关键词重合召回
+- 摘要与自动抽取各会多消耗一次模型调用
+
+**验证**：`backend/tests/context_test.py`（16 项，用假 AI 客户端确定性验证三件套）
 
 ## 九、安全与可信设计
 

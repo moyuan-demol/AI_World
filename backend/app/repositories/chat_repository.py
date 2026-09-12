@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models.chat import Conversation, Message
 from app.repositories.base import BaseRepository
@@ -45,6 +45,12 @@ class MessageRepository(BaseRepository[Message]):
             .limit(limit)
         )
         return list(reversed(list(result.scalars().all())))
+
+    async def count_by_conversation(self, conversation_id: int) -> int:
+        result = await self.session.execute(
+            select(func.count(Message.id)).where(Message.conversation_id == conversation_id)
+        )
+        return int(result.scalar_one())
 
     async def list_by_user(self, user_id: int, limit: int = 100) -> list[Message]:
         result = await self.session.execute(

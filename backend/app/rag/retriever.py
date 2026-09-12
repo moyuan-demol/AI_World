@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import settings
 from app.core.errors import NotFoundError
 from app.models.document import Document
-from app.rag.embedding import embed_query
+from app.rag.embedding import EmbeddingConfig, embed_query
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
 
@@ -42,8 +42,11 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
 class Retriever:
     """Cosine similarity search constrained to the current user's data."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, embedding_config: EmbeddingConfig | None = None
+    ) -> None:
         self.session = session
+        self.embedding_config = embedding_config
         self.documents = DocumentRepository(session)
         self.knowledge = KnowledgeRepository(session)
 
@@ -73,7 +76,7 @@ class Retriever:
         if not documents:
             return []
 
-        query_vector = await embed_query(query)
+        query_vector = await embed_query(query, self.embedding_config)
         if not query_vector:
             return []
 

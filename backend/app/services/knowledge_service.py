@@ -13,6 +13,7 @@ from app.core.errors import NotFoundError, ValidationError
 from app.core.files import sanitize_filename
 from app.models.document import Document
 from app.models.knowledge import KnowledgeBase
+from app.rag.embedding import EmbeddingConfig
 from app.rag.rag_service import RagService
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
@@ -22,11 +23,13 @@ logger = logging.getLogger(__name__)
 
 
 class KnowledgeService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, embedding_config: EmbeddingConfig | None = None
+    ) -> None:
         self.session = session
         self.knowledge = KnowledgeRepository(session)
         self.documents = DocumentRepository(session)
-        self.rag = RagService(session)
+        self.rag = RagService(session, embedding_config)
 
     # ------------------------------------------------------------------ #
     @staticmethod

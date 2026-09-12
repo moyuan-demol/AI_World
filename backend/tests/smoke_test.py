@@ -198,6 +198,14 @@ def main() -> int:
     response = client.delete("/api/characters/" + str(character_id), headers=headers(token_a))
     check("delete character (cascades conversations)", response.status_code == 204, str(response.status_code))
 
+    print("\n== 9. 权限系统 ==")
+    response = client.get("/api/admin/usage", headers=headers(token_a))
+    check("普通用户访问管理员接口被拒绝(403)", response.status_code == 403, str(response.status_code))
+    response = client.get("/api/admin/users", headers=headers(token_a))
+    check("普通用户访问用户列表被拒绝(403)", response.status_code == 403, str(response.status_code))
+    response = client.get("/api/admin/usage")
+    check("未登录访问管理员接口被拒绝(401)", response.status_code == 401, str(response.status_code))
+
     client.close()
 
     print("\n" + "=" * 56)

@@ -1,16 +1,20 @@
-"""Embedding providers.
+"""Embedding 向量化层。
 
-Default is a dependency-free local hashing embedder (deterministic, offline).
-Set EMBEDDING_PROVIDER=openai plus EMBEDDING_API_BASE / EMBEDDING_API_KEY /
-EMBEDDING_MODEL to use any OpenAI compatible embedding endpoint (for example a
-BGE-M3 service). Vectors are stored as JSON text in SQLite; migrate the column
-to pgvector later without touching the RAG code.
+配置优先级（从高到低）：
+1. 调用方传入的 EmbeddingConfig —— 例如访客在界面上填的「自带向量服务」，
+   只在其本人会话内生效，不入库、不写日志、不共享；
+2. 服务端 .env / Secrets 配置（EMBEDDING_PROVIDER 等）；
+3. 内置离线哈希实现 —— 零依赖、可离线，但**只是关键词重合度，不是语义模型**。
+
+对接协议：任何兼容 OpenAI 的 POST {api_base}/embeddings 服务
+（例如 SiliconFlow 的 BAAI/bge-m3、智谱 embedding-3、OpenAI text-embedding-3-small）。
 """
 
 import hashlib
 import logging
 import math
 import re
+from dataclasses import dataclass
 
 import httpx
 
@@ -20,6 +24,49 @@ logger = logging.getLogger(__name__)
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+@dataclass
+class EmbeddingConfig:
+    """一次请求所使用的向量化配置。"""
+
+    provider: str = "local"  # local | openai
+    api_base: str = ""
+    api_key: str = ""
+    model: str = ""
+    dim: int = 0
+
+    @property
+    def is_remote(self) -> bool:
+        return (
+            self.provider.lower() == "openai"
+            and bool(self.api_base.strip())
+            and bool(self.api_key.strip())
+        )
+
+    @property
+    def effective_dim(self) -> int:
+        return self.dim or settings.embedding_dim
+
+    @property
+    def label(self) -> str:
+        if self.is_remote:
+            return "外部语义向量服务 " + (self.model.strip() or "(未指定模型)")
+        return "内置离线（关键词哈希，非语义模型）"
+
+    @classmethod
+    def from_settings(cls) -> "EmbeddingConfig":
+        return cls(
+            provider=settings.embedding_provider,
+            api_base=settings.embedding_api_base,
+            api_key=settings.embedding_api_key,
+            model=settings.embedding_model,
+            dim=settings.embedding_dim,
+        )
+
+
+def resolve_config(config: EmbeddingConfig | None = None) -> EmbeddingConfig:
+    return config if config is not None else EmbeddingConfig.from_settings()
 
 
 def tokenize(text: str) -> list[str]:
@@ -33,7 +80,7 @@ def tokenize(text: str) -> list[str]:
 
 
 def local_embed(text: str, dim: int | None = None) -> list[float]:
-    """Signed hashing bag-of-words embedding, L2 normalised."""
+    """内置离线实现：带符号的哈希词袋 + L2 归一化（确定性、无依赖）。"""
     dim = dim or settings.embedding_dim
     vector = [0.0] * dim
     tokens = tokenize(text)
@@ -50,13 +97,13 @@ def local_embed(text: str, dim: int | None = None) -> list[float]:
     return vector
 
 
-async def _remote_embed(texts: list[str]) -> list[list[float]]:
-    url = settings.embedding_api_base.rstrip("/") + "/embeddings"
+async def _remote_embed(texts: list[str], config: EmbeddingConfig) -> list[list[float]]:
+    url = config.api_base.rstrip("/") + "/embeddings"
     headers = {
-        "Authorization": "Bearer " + settings.embedding_api_key,
+        "Authorization": "Bearer " + config.api_key,
         "Content-Type": "application/json",
     }
-    payload = {"model": settings.embedding_model, "input": texts}
+    payload = {"model": config.model, "input": texts}
     async with httpx.AsyncClient(timeout=settings.ai_timeout_seconds) as client:
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
@@ -65,20 +112,23 @@ async def _remote_embed(texts: list[str]) -> list[list[float]]:
     return [item.get("embedding", []) for item in items]
 
 
-async def embed_texts(texts: list[str]) -> list[list[float]]:
+async def embed_texts(
+    texts: list[str], config: EmbeddingConfig | None = None
+) -> list[list[float]]:
     if not texts:
         return []
-    if settings.embedding_provider.lower() == "openai" and settings.embedding_api_base and settings.embedding_api_key:
+    resolved = resolve_config(config)
+    if resolved.is_remote:
         try:
-            vectors = await _remote_embed(texts)
+            vectors = await _remote_embed(texts, resolved)
             if len(vectors) == len(texts):
                 return vectors
             logger.warning("远端 embedding 返回数量不匹配，回退本地实现")
         except Exception as exc:
             logger.warning("远端 embedding 调用失败，回退本地实现: %s", exc)
-    return [local_embed(text) for text in texts]
+    return [local_embed(text, resolved.effective_dim) for text in texts]
 
 
-async def embed_query(text: str) -> list[float]:
-    vectors = await embed_texts([text])
+async def embed_query(text: str, config: EmbeddingConfig | None = None) -> list[float]:
+    vectors = await embed_texts([text], config)
     return vectors[0] if vectors else []

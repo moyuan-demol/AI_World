@@ -25,6 +25,7 @@ class AuthService:
             username=payload.username,
             password_hash=hash_password(payload.password),
             email=payload.email,
+            role=self._role_for(payload.username),
         )
         await self.session.commit()
         return self.issue_token(user)
@@ -44,6 +45,7 @@ class AuthService:
                 username=settings.demo_username,
                 password_hash=hash_password(settings.demo_password),
                 email="demo@ai-world.local",
+                role=self._role_for(settings.demo_username),
             )
             await self.session.commit()
             created = True
@@ -54,6 +56,11 @@ class AuthService:
         if user is None:
             raise ServiceError("登录状态无效，请重新登录", status_code=401, code="invalid_token")
         return user
+
+    @staticmethod
+    def _role_for(username: str) -> str:
+        """ADMIN_USERNAMES 中列出的用户名授予 admin 角色（默认普通用户）。"""
+        return "admin" if username in settings.admin_username_list else "user"
 
     @staticmethod
     def issue_token(user: User) -> TokenOut:

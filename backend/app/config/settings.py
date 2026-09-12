@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     history_char_budget: int = 6000  # 历史消息总字符预算（超出则从最旧的丢弃）
     memory_inject_limit: int = 5     # 注入多少条长期记忆
 
+    # ---- 长记忆三件套 ----
+    summary_enabled: bool = True           # 滚动摘要：滑出窗口的旧消息压缩成摘要
+    history_retrieval_enabled: bool = True  # 历史向量检索：按相关度召回窗口外的历史
+    history_retrieval_top_k: int = 3
+    history_retrieval_scan: int = 200
+    memory_auto_extract: bool = True        # 自动事实抽取
+    memory_extract_every: int = 6           # 每 N 条消息触发一次抽取
+
     # ---- Embedding (local hashing by default; or any OpenAI compatible API) ----
     embedding_provider: str = "local"  # local | openai
     embedding_api_base: str = ""
@@ -82,6 +90,9 @@ class Settings(BaseSettings):
     demo_username: str = "demo"
     demo_password: str = "demo123"
 
+    # ---- 权限（Phase 2）：逗号分隔的管理员用户名 ----
+    admin_usernames: str = ""
+
     # ------------------------------------------------------------------ #
     @property
     def sqlalchemy_url(self) -> str:
@@ -98,6 +109,10 @@ class Settings(BaseSettings):
     @property
     def allowed_extension_list(self) -> list[str]:
         return [item.strip().lower() for item in self.allowed_extensions.split(",") if item.strip()]
+
+    @property
+    def admin_username_list(self) -> list[str]:
+        return [item.strip() for item in self.admin_usernames.split(",") if item.strip()]
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -17,6 +17,7 @@ from app.ai.prompts import (
     character_to_agent_spec,
 )
 from app.core.errors import NotFoundError, ValidationError
+from app.rag.embedding import EmbeddingConfig
 from app.rag.rag_service import RagService
 from app.repositories.character_repository import CharacterRepository
 from app.schemas.roundtable import (
@@ -33,10 +34,15 @@ MANAGER_ROLE = "会议主持与方案汇总"
 
 
 class RoundtableService:
-    def __init__(self, session: AsyncSession, ai_client: AIClient | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        ai_client: AIClient | None = None,
+        embedding_config: EmbeddingConfig | None = None,
+    ) -> None:
         self.session = session
         self.characters = CharacterRepository(session)
-        self.rag = RagService(session)
+        self.rag = RagService(session, embedding_config)
         self.ai = ai_client or get_ai_client()
 
     # ------------------------------------------------------------------ #

@@ -6,6 +6,8 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config.settings import settings
+from app.core.errors import PermissionDeniedError
 from app.core.ratelimit import RateLimiter
 from app.core.security import decode_access_token
 from app.database.session import get_session
@@ -48,6 +50,23 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def is_admin(user: User) -> bool:
+    """管理员判定：users.role == admin，或用户名出现在 ADMIN_USERNAMES 中。"""
+    if (getattr(user, "role", "") or "") == "admin":
+        return True
+    return user.username in settings.admin_username_list
+
+
+async def require_admin(user: CurrentUser) -> User:
+    """管理员专属依赖：非管理员返回 403（权限系统）。"""
+    if not is_admin(user):
+        raise PermissionDeniedError("需要管理员权限")
+    return user
+
+
+AdminUser = Annotated[User, Depends(require_admin)]
 
 # ---- rate limiting ---------------------------------------------------- #
 _auth_limiter = RateLimiter(max_calls=20, window_seconds=60)

@@ -62,6 +62,7 @@ os.environ.setdefault("DATA_DIR", str(DATA_DIR))
 os.environ.setdefault("UPLOAD_DIR", str(DATA_DIR / "uploads"))
 
 from app.ai.deepseek_client import AIClient  # noqa: E402
+from app.rag.embedding import EmbeddingConfig  # noqa: E402
 from app.config.settings import settings  # noqa: E402
 from app.core.files import sanitize_filename, validate_signature  # noqa: E402
 from app.database.init_db import init_db  # noqa: E402
@@ -222,7 +223,9 @@ def api_list_documents(user_id: int, knowledge_id: int, limit: int = 50) -> list
     return db_call(handler)
 
 
-def api_upload_document(user_id: int, filename: str, data: bytes, knowledge_id, name) -> dict:
+def api_upload_document(
+    user_id: int, filename: str, data: bytes, knowledge_id, name, embedding_config=None
+) -> dict:
     """与 HTTP 接口一致的安全校验：扩展名白名单 + 文件名净化 + 文件签名校验。"""
     safe_name = sanitize_filename(filename or "upload.txt")
     suffix = Path(safe_name).suffix.lower()
@@ -235,7 +238,7 @@ def api_upload_document(user_id: int, filename: str, data: bytes, knowledge_id, 
     validate_signature(safe_name, data)
 
     async def handler(session):
-        result = await KnowledgeService(session).upload(
+        result = await KnowledgeService(session, embedding_config=embedding_config).upload(
             user_id,
             filename=safe_name,
             data=data,
@@ -261,6 +264,7 @@ def api_chat(
     knowledge_id,
     use_knowledge: bool,
     ai_client: AIClient | None = None,
+    embedding_config=None,
 ) -> dict:
     async def handler(session):
         payload = ChatRequest(
@@ -270,7 +274,9 @@ def api_chat(
             knowledge_id=knowledge_id,
             use_knowledge=use_knowledge,
         )
-        result = await ChatService(session, ai_client=ai_client).chat(user_id, payload)
+        result = await ChatService(
+            session, ai_client=ai_client, embedding_config=embedding_config
+        ).chat(user_id, payload)
         return {
             "answer": result.answer,
             "conversation_id": result.conversation_id,
@@ -310,6 +316,7 @@ def api_run_roundtable(
     use_knowledge: bool,
     knowledge_id,
     ai_client: AIClient | None = None,
+    embedding_config=None,
 ) -> dict:
     async def handler(session):
         payload = RoundtableRequest(
@@ -319,7 +326,9 @@ def api_run_roundtable(
             use_knowledge=use_knowledge,
             include_manager=True,
         )
-        result = await RoundtableService(session, ai_client=ai_client).run(user_id, payload)
+        result = await RoundtableService(
+            session, ai_client=ai_client, embedding_config=embedding_config
+        ).run(user_id, payload)
         return {
             "manager_brief": result.manager_brief,
             "summary": result.summary,
@@ -413,6 +422,20 @@ def active_model_name() -> str:
     return custom or settings.deepseek_model
 
 
+def session_embedding_config() -> EmbeddingConfig | None:
+    """访客自带的向量服务；没填 -> None（走服务端配置或内置离线实现）。"""
+    key = (st.session_state.get("emb_key") or "").strip()
+    base = (st.session_state.get("emb_base") or "").strip()
+    if not key or not base:
+        return None
+    model = (st.session_state.get("emb_model") or "").strip() or settings.embedding_model
+    return EmbeddingConfig(provider="openai", api_base=base, api_key=key, model=model)
+
+
+def active_embedding_label() -> str:
+    return (session_embedding_config() or EmbeddingConfig.from_settings()).label
+
+
 def session_key() -> str:
     """本浏览器会话的匿名标识，用于区分不同访客（不含任何个人信息）。"""
     if "sid" not in st.session_state:
@@ -496,19 +519,33 @@ def sidebar(user_id: int, username: str) -> str:
         else:
             st.warning("离线演示模式：回答为本地占位内容")
         st.write("模型：" + active_model_name())
-        embedding_label = (
-            "内置离线（关键词哈希，非语义模型）"
-            if settings.embedding_provider == "local"
-            else ("外部服务 " + settings.embedding_model)
-        )
-        st.write("文本向量：" + embedding_label)
+        st.write("文本向量：" + active_embedding_label())
+
+        with st.expander("🧠 使用我自己的向量服务（可选，提升检索质量）"):
+            st.caption(
+                "默认是内置离线哈希向量：本质是**关键词重合度**，换个说法（如「心梗 / 心肌梗死」）就检索不到。"
+                "填入任意兼容 OpenAI 的 /embeddings 服务即可获得真正的语义检索。"
+                "Key 只保存在本浏览器会话内存：不入库、不写日志、不与其他访客共享。"
+            )
+            st.text_input(
+                "Embedding API Base",
+                key="emb_base",
+                placeholder="https://api.siliconflow.cn/v1",
+            )
+            st.text_input("Embedding API Key", type="password", key="emb_key", placeholder="sk-...")
+            st.text_input("Embedding 模型", key="emb_model", placeholder="BAAI/bge-m3")
+            if session_embedding_config() is not None:
+                st.success("已启用你自己的向量服务：" + active_embedding_label())
+            st.caption(
+                "⚠️ 不同向量模型的空间不可比：切换后请重新上传文件，否则旧文档检索会失效。"
+            )
+
         with st.expander("❓ 什么是「文本向量」"):
             st.caption(
-                "把文本转成一串数字（向量），检索时用余弦相似度衡量「哪段资料和问题最接近」。"
-                "当前为内置离线实现：按字/词哈希到 "
+                "把文本转成一串数字（向量），检索时用余弦相似度衡量「哪段资料与问题最接近」。"
+                "内置离线实现按字/词哈希到 "
                 + str(settings.embedding_dim)
-                + " 维，本质是关键词重合度，**不是**真正的语义模型。"
-                "配置 EMBEDDING_PROVIDER=openai + 外部向量服务（如 BGE-M3）后才会获得语义级检索。"
+                + " 维，只是关键词重合度的近似；接入外部向量服务后才是语义级检索。"
             )
         st.write("账号：" + username)
 
@@ -663,6 +700,7 @@ def page_knowledge(user_id: int) -> None:
                             uploaded.getvalue(),
                             knowledge_id,
                             uploaded.name if knowledge_id is None else None,
+                            session_embedding_config(),
                         )
                     record_usage(
                         user_id,
@@ -764,6 +802,7 @@ def page_chat(user_id: int) -> None:
                         kb_options[kb_label] if use_knowledge else None,
                         use_knowledge,
                         session_ai_client(),
+                        session_embedding_config(),
                     )
                 except Exception as error:
                     record_usage(
@@ -850,7 +889,13 @@ def page_roundtable(user_id: int) -> None:
             started = time.perf_counter()
             try:
                 result = api_run_roundtable(
-                    user_id, question.strip(), chosen_agents, use_knowledge, knowledge_id, session_ai_client()
+                    user_id,
+                    question.strip(),
+                    chosen_agents,
+                    use_knowledge,
+                    knowledge_id,
+                    session_ai_client(),
+                    session_embedding_config(),
                 )
             except Exception as error:
                 record_usage(
