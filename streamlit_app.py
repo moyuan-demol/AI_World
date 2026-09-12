@@ -238,12 +238,25 @@ def login_gate() -> int | None:
 
     st.title("🌍 AI World")
     st.caption("AI 世界 · 你的个人 AI 智能空间。**每个账号的数据完全隔离**，别人看不到也改不了。")
+    st.caption(
+        "第一次使用？直接切到 **「注册新账号」** 标签：**不需要手机号、不需要邮箱**，"
+        "起个名字 + 设个密码即可。"
+    )
 
     tab_login, tab_register = st.tabs(["登录", "注册新账号"])
     with tab_login:
         with st.form("login_form"):
-            name = st.text_input("用户名", key="login_name")
-            password = st.text_input("密码", type="password", key="login_pwd")
+            name = st.text_input(
+                "用户名",
+                key="login_name",
+                placeholder="注册时填的那个名字（不是手机号）",
+            )
+            password = st.text_input(
+                "密码",
+                type="password",
+                key="login_pwd",
+                placeholder="注册时设的密码",
+            )
             submitted = st.form_submit_button("登录", type="primary")
         if submitted:
             if not name.strip() or not password:
@@ -256,9 +269,28 @@ def login_gate() -> int | None:
                     st.error(redact_credentials(type(exc).__name__ + ": " + str(exc)))
     with tab_register:
         with st.form("register_form"):
-            new_name = st.text_input("用户名（至少 2 位）", key="reg_name")
-            new_pwd = st.text_input("密码（至少 6 位）", type="password", key="reg_pwd")
-            new_email = st.text_input("邮箱（可选）", key="reg_email")
+            st.caption(
+                "✅ **不需要手机号、不需要邮箱验证** —— 起个名字 + 设个密码就能用，约 30 秒。"
+            )
+            new_name = st.text_input(
+                "用户名（2-20 位，中文/英文/数字均可）",
+                key="reg_name",
+                placeholder="例如：xiaoming / 小明 / user_01",
+                help="随便起一个名字即可，**不是手机号、也不是邮箱**。以后登录就用它，请自己记住。",
+            )
+            new_pwd = st.text_input(
+                "密码（至少 6 位）",
+                type="password",
+                key="reg_pwd",
+                placeholder="自己设一个，例如 MyPwd2026",
+                help="建议别用 123456 或生日。目前没有找回密码功能，忘了只能重新注册。",
+            )
+            new_email = st.text_input(
+                "邮箱（选填，仅作备注）",
+                key="reg_email",
+                placeholder="不填也能注册",
+                help="当前不会发送验证邮件，填了只是方便你自己记。",
+            )
             submitted_new = st.form_submit_button("注册并进入", type="primary")
         if submitted_new:
             if len(new_name.strip()) < 2 or len(new_pwd) < 6:
