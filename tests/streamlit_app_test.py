@@ -33,7 +33,20 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 
 PAGES = ["我的世界", "AI伙伴", "知识世界", "AI聊天", "AI圆桌"]
 USAGE_PAGE = "📊 用量统计"
+RECYCLE_PAGE = "🗑 回收站"
 FAILURES: list[str] = []
+
+# 与 streamlit_app.PAGE_SLUG 对应的期望值：第 9 节断言 ?page= 是否同步到位。
+# 这里独立写一份（不 import streamlit_app），避免在测试进程里触发应用模块级副作用。
+NAV_SLUGS = {
+    "我的世界": "home",
+    "AI伙伴": "characters",
+    "知识世界": "knowledge",
+    "AI聊天": "chat",
+    "AI圆桌": "roundtable",
+    RECYCLE_PAGE: "recycle",
+    USAGE_PAGE: "usage",
+}
 
 # 模拟"普通访客被强行带到站长页"：绕过菜单直接调用页面函数。
 # streamlit_app 底部有 __main__ 守卫，import 不会顺带执行整个 main()。
@@ -228,6 +241,82 @@ def main() -> int:
     check("站长页渲染无异常", at)
     metric_labels = [str(getattr(item, "label", "")) for item in at.metric]
     expect("站长页渲染出用量指标「调用次数」", "调用次数" in metric_labels, str(metric_labels))
+
+    print("\n== 9. 导航单击即生效 ==")
+    # 复现用户反馈的"每次切换页面都要点两次"。
+    # 根因：导航 radio 没有显式 key 时，Streamlit 会把 index 也编进控件 ID；
+    # 而 index 由 URL 的 ?page= 推导。用户点一下 -> 本次运行控件值已经变了，
+    # 但 URL 还停在旧页 -> index 仍是旧页 -> 控件 ID 变化 -> Streamlit 把它当成
+    # "新控件"，刚点的值被丢弃，页面看起来没反应；等 URL 更新后点第二次才生效。
+    # 因此这里必须验证"单击 + 只 run 一次"就切换到位，且每个导航项都单独验。
+    # 注意：刻意不在两次单击之间插额外的 run 去"复位到默认页"——多出的那次 run
+    # 恰好会让滞后的控件 ID 对齐一次，反而掩盖真实 bug（修复前实测：插入 run 后
+    # 全部假通过）。循环开始时已经先 at.run() 停在默认页，符合"先到默认页"的意图。
+    nav_at = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=300)
+    nav_at.run()
+    nav_at.session_state["uid"] = 1
+    nav_at.session_state["uname"] = "demo"
+    nav_at.session_state["is_admin"] = True
+    nav_at.run()  # 先 at.run() 到默认页（我的世界）
+    check("导航测试初始渲染（默认页）", nav_at)
+
+    def nav_evidence(target_at: AppTest) -> dict:
+        """集中取出各页用于断言的"独特关键词"，失败时可直接看出实际渲染了什么。"""
+        return {
+            "titles": [str(getattr(item, "value", item)) for item in target_at.title],
+            "expander_labels": [str(getattr(item, "label", "")) for item in target_at.expander],
+            "button_labels": [str(getattr(item, "label", "")) for item in target_at.button],
+            "metric_labels": [str(getattr(item, "label", "")) for item in target_at.metric],
+            "chat_placeholders": [
+                str(getattr(item, "placeholder", "")) for item in target_at.chat_input
+            ],
+        }
+
+    def is_on_page(label: str, evidence: dict) -> bool:
+        titles = evidence["titles"]
+        if label == "我的世界":
+            return any("欢迎进入 AI World" in item for item in titles)
+        if label == "AI伙伴":
+            return any(item == "AI 伙伴" for item in titles) and any(
+                "新建 AI 伙伴" in item for item in evidence["expander_labels"]
+            )
+        if label == "知识世界":
+            return any(item == "知识世界" for item in titles)
+        if label == "AI聊天":
+            return any(item == "AI 聊天" for item in titles) and any(
+                "输入你的问题" in item for item in evidence["chat_placeholders"]
+            )
+        if label == "AI圆桌":
+            return any(item == "AI 圆桌" for item in titles) and any(
+                item == "发起圆桌讨论" for item in evidence["button_labels"]
+            )
+        if label == RECYCLE_PAGE:
+            return any(item == RECYCLE_PAGE for item in titles)
+        if label == USAGE_PAGE:
+            return any("用量统计" in item for item in titles) and any(
+                item == "调用次数" for item in evidence["metric_labels"]
+            )
+        return False
+
+    def url_page(target_at: AppTest) -> str:
+        raw = target_at.query_params.get("page", "")
+        if isinstance(raw, (list, tuple)):
+            return str(raw[0]) if raw else ""
+        return str(raw or "")
+
+    for nav_label in NAV_SLUGS:
+        nav_at.sidebar.radio[0].set_value(nav_label).run()  # 单击一次，只 run 一次
+        evidence = nav_evidence(nav_at)
+        expect(
+            "单击「" + nav_label + "」一次即渲染目标页",
+            is_on_page(nav_label, evidence),
+            str(evidence),
+        )
+        expect(
+            "单击「" + nav_label + "」后 ?page= 同步为 " + NAV_SLUGS[nav_label],
+            url_page(nav_at) == NAV_SLUGS[nav_label],
+            "实际 ?page=" + url_page(nav_at),
+        )
 
     print("\n" + "=" * 56)
     if FAILURES:

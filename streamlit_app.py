@@ -948,17 +948,28 @@ def sidebar(user_id: int, username: str) -> str:
         st.markdown("### 🌍 AI World")
         st.caption("个人/企业级 AI 智能空间")
         items = nav_items()
-        # URL 同步：刷新/分享链接能停在当前页；未知参数一律回落到首页（白名单校验）
-        requested = str(st.query_params.get("page", "home") or "home")
-        default_label = SLUG_PAGE.get(requested, items[0])
-        if default_label not in items:
-            default_label = items[0]
-        page = st.radio(
-            "导航",
-            items,
-            index=items.index(default_label),
-            label_visibility="collapsed",
-        )
+        # 导航控件用显式 key="nav"，并让 st.session_state["nav"] 成为「当前页」唯一真相。
+        #
+        # 为什么（修「每次切页都要点两次」）：原来用 index=items.index(default_label)
+        # 把 URL 推导出的页面塞给控件，同时又用控件值回写 URL，控件值被两套来源
+        # 同时控制。Streamlit 对**没有 key** 的控件会把 index 一起编进控件 ID：
+        # 用户点一下时，本次运行的控件值已经变了，但 URL 还停在旧页 -> index 仍是旧页
+        # -> 控件 ID 与上一轮不一致 -> 这一下点击被当成"另一个新控件"而丢弃（看起来
+        # 没反应），要等 URL 更新后点第二次才生效。
+        # 改用显式 key 后控件 ID 只由 key 决定，点击当次即生效；且之后**不再传 index**。
+        if "nav" not in st.session_state:
+            # 只在第一次初始化时读 URL：刷新/分享链接能直接停在该页
+            # （白名单校验：未知/非法 slug 一律回落到第一项）。
+            requested = str(st.query_params.get("page", "home") or "home")
+            initial = SLUG_PAGE.get(requested, items[0])
+            st.session_state["nav"] = initial if initial in items else items[0]
+        # 菜单是动态的（站长页只对站长可见）：登录态/权限变化后旧选项可能已消失，
+        # 必须先安全回落到第一项，否则 st.radio 会因当前值不在 options 里而报错。
+        if st.session_state["nav"] not in items:
+            st.session_state["nav"] = items[0]
+        page = st.radio("导航", items, key="nav", label_visibility="collapsed")
+        # URL 单向同步：以控件当前值为准；只在两者不一致时才写，
+        # 保持"刷新/分享链接停留在同一页"的既有能力。
         target_slug = PAGE_SLUG.get(page, "home")
         if str(st.query_params.get("page", "")) != target_slug:
             st.query_params["page"] = target_slug
