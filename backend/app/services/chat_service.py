@@ -21,6 +21,7 @@ from app.rag.query_rewrite import build_rewrite_messages, needs_rewrite, parse_r
 from app.rag.rag_service import RagService
 from app.rag.rerank import rerank
 from app.rag.retriever import RetrievedChunk, cosine_similarity
+from app.rag.meta_query import is_meta_question
 from app.tools.web_search import WebSearchTool
 from app.repositories.character_repository import CharacterRepository
 from app.repositories.character_knowledge_repository import CharacterKnowledgeRepository
@@ -206,6 +207,11 @@ class ChatService:
         返回的网页资料被包装成伪 RetrievedChunk（document_id 为负数），
         这样能和知识库片段一起进入上下文与"引用来源"。
         """
+        # 元信息类问题（作者/页数/上传时间/文件名）在互联网上根本搜不到 ——
+        # 那是用户自己上传的文档；联网只会带回无关词条
+        # （实测：问"论文作者是谁"会返回叔本华/克尔凯郭尔等维基条目）。故直接跳过。
+        if is_meta_question(query):
+            return [], []
         if not enabled or self.search_tool is None or not self.search_tool.enabled:
             return [], []
         outcome = await self.search_tool.search(query)
