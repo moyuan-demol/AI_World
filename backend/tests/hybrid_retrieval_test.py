@@ -58,7 +58,8 @@ def main() -> int:
     check("不相关的结直肠癌/财报未被命中", 3 not in got and 4 not in got, str(got))
 
     print("\n== 2. 单字噪声防护 ==")
-    noise_docs = [Doc(9, "是的，这里主要是说明文字。"), Doc(10, "你是谁不重要，重要的是结果。")]
+    # 注意：文档里不能出现查询的「双字」组合，否则命中是正确行为
+    noise_docs = [Doc(9, "是的，这里主要是说明文字。"), Doc(10, "这个问题不重要，重要的是结果。")]
     check("只共享常见单字 → 不命中", bm25_search("是谁", noise_docs) == [], str(ids(bm25_search("是谁", noise_docs))))
 
     print("\n== 3. RRF 融合：BM25 能救回稠密通道漏掉的文档 ==")
