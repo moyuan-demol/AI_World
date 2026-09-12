@@ -995,7 +995,10 @@ def page_knowledge(user_id: int) -> None:
                     st.success("已创建知识库")
                     st.rerun()
 
-    with st.expander("⬆️ 上传文件（PDF / DOCX / TXT / MD）", expanded=True):
+    supported = " / ".join(
+        item.lstrip(".").upper() for item in settings.allowed_extension_list
+    )
+    with st.expander("⬆️ 上传文件（" + supported + "）", expanded=True):
         options = ["自动创建新知识库"] + list(kb_label_map(user_id).values())
         target = st.selectbox("上传到", options)
         uploaded = st.file_uploader(

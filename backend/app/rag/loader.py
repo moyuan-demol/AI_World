@@ -2,6 +2,7 @@
 
 import io
 import logging
+import re
 from pathlib import Path
 
 from app.core.errors import ValidationError
@@ -17,13 +18,45 @@ TEXT_EXTENSIONS = {
     ".json",
     ".html",
     ".htm",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".log",
+    ".sql",
+    ".toml",
+    ".py",
+    ".js",
+    ".ts",
+    ".java",
+    ".c",
+    ".h",
+    ".cpp",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".vue",
+    ".css",
 }
+XLS_EXTENSIONS = {".xls"}  # Excel 97-2003（二进制，需 xlrd）
 XLSX_EXTENSIONS = {".xlsx", ".xlsm"}
 PPTX_EXTENSIONS = {".pptx"}
+RTF_EXTENSIONS = {".rtf"}
+ODF_EXTENSIONS = {".odt", ".ods", ".odp"}  # OpenDocument（同样是 ZIP+XML）
 PDF_EXTENSIONS = {".pdf"}
 DOCX_EXTENSIONS = {".docx"}
 SUPPORTED_EXTENSIONS = (
-    TEXT_EXTENSIONS | PDF_EXTENSIONS | DOCX_EXTENSIONS | XLSX_EXTENSIONS | PPTX_EXTENSIONS
+    TEXT_EXTENSIONS
+    | PDF_EXTENSIONS
+    | DOCX_EXTENSIONS
+    | XLS_EXTENSIONS
+    | XLSX_EXTENSIONS
+    | PPTX_EXTENSIONS
+    | RTF_EXTENSIONS
+    | ODF_EXTENSIONS
 )
 
 _ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "big5", "latin-1")
@@ -42,6 +75,12 @@ def load_from_bytes(data: bytes, filename: str) -> str:
         return _load_pdf(data)
     if suffix in DOCX_EXTENSIONS:
         return _load_docx(data)
+    if suffix in XLS_EXTENSIONS:
+        return _load_xls(data)
+    if suffix in RTF_EXTENSIONS:
+        return _load_rtf(data)
+    if suffix in ODF_EXTENSIONS:
+        return _load_odf(data)
     if suffix in XLSX_EXTENSIONS:
         return _load_xlsx(data)
     if suffix in PPTX_EXTENSIONS:
@@ -80,6 +119,63 @@ def _load_pdf(data: bytes) -> str:
     text = "\n".join(pages).strip()
     if not text:
         raise ValidationError("未能从 PDF 中提取到文本（可能是扫描件，需要 OCR）")
+    return text
+
+
+def _load_xls(data: bytes) -> str:
+    """Excel 97-2003（.xls）：用 xlrd 逐行导出。"""
+    try:
+        import xlrd
+    except ImportError as exc:  # pragma: no cover
+        raise ValidationError("解析 .xls 需要安装 xlrd") from exc
+    try:
+        book = xlrd.open_workbook(file_contents=data)
+    except Exception as exc:
+        raise ValidationError("XLS 文件已损坏或无法读取：" + str(exc)) from exc
+    parts: list[str] = []
+    for sheet in book.sheets():
+        parts.append("# 工作表：" + str(sheet.name))
+        for row_index in range(sheet.nrows):
+            cells = [str(cell).strip() for cell in sheet.row_values(row_index) if str(cell).strip()]
+            if cells:
+                parts.append(" | ".join(cells))
+    text = "\n".join(parts).strip()
+    if not text:
+        raise ValidationError("未能从 XLS 中提取到文本")
+    return text
+
+
+def _load_rtf(data: bytes) -> str:
+    """RTF：优先用 striprtf；没有库时退回粗糙的纯文本清洗。"""
+    raw = data.decode("latin-1", errors="ignore")
+    try:
+        from striprtf.striprtf import rtf_to_text
+
+        text = rtf_to_text(raw, errors="ignore").strip()
+    except ImportError:
+        text = re.sub(r"\\[a-z]+-?\d* ?", " ", raw)
+        text = re.sub(r"[{}]", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        raise ValidationError("未能从 RTF 中提取到文本")
+    return text
+
+
+def _load_odf(data: bytes) -> str:
+    """OpenDocument（.odt/.ods/.odp）：本质是 ZIP + content.xml。"""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            xml_bytes = archive.read("content.xml")
+    except Exception as exc:
+        raise ValidationError("OpenDocument 文件已损坏或无法读取：" + str(exc)) from exc
+    xml_text = xml_bytes.decode("utf-8", errors="ignore")
+    xml_text = re.sub(r"</text:(p|h|table-cell|table-row)>", "\n", xml_text)
+    text = re.sub(r"<[^>]+>", "", xml_text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if not text:
+        raise ValidationError("未能从 OpenDocument 中提取到文本")
     return text
 
 
