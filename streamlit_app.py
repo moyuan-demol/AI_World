@@ -277,10 +277,11 @@ def api_list_knowledge(user_id: int) -> list[dict]:
     return db_call(handler)
 
 
-def api_create_knowledge(user_id: int, name: str, description: str) -> dict:
+def api_create_knowledge(user_id: int, name: str, description: str, parent_id=None) -> dict:
     async def handler(session):
         row = await KnowledgeService(session).create(
-            user_id, KnowledgeCreate(name=name, description=description)
+            user_id,
+            KnowledgeCreate(name=name, description=description, parent_id=parent_id),
         )
         return {"id": row.id, "name": row.name, "document_count": row.document_count}
 
@@ -779,12 +780,53 @@ def page_dashboard(user_id: int) -> None:
             st.caption("还没有知识库，去「知识世界」上传文件。")
 
 
-def kb_choices(user_id: int) -> dict:
-    """知识库选择项：{显示名: id}。"""
+def kb_tree(user_id: int) -> list[dict]:
+    """把扁平的知识库列表整理成树形顺序（用于分级展示）。
+
+    返回 [{item, depth}]，按父→子顺序展开；找不到父节点的（父被删）
+    会作为顶层兜底，避免"消失不见"。
+    """
+    bases = api_list_knowledge(user_id)
+    by_parent: dict = {}
+    for item in bases:
+        by_parent.setdefault(item.get("parent_id"), []).append(item)
+
+    ordered: list[dict] = []
+    seen: set[int] = set()
+
+    def walk(parent_id, depth: int) -> None:
+        for item in by_parent.get(parent_id, []):
+            if item["id"] in seen:
+                continue
+            seen.add(item["id"])
+            ordered.append({"item": item, "depth": depth})
+            walk(item["id"], depth + 1)
+
+    walk(None, 0)
+    for item in bases:  # 兜底：父节点缺失的孤儿节点
+        if item["id"] not in seen:
+            ordered.append({"item": item, "depth": 0})
+            seen.add(item["id"])
+    return ordered
+
+
+def kb_label_map(user_id: int) -> dict:
+    """{id: 带缩进的显示名}（文件夹用 📁，叶子用 📄）。"""
+    tree = kb_tree(user_id)
+    has_child = {node["item"]["parent_id"] for node in tree}
     return {
-        item["name"] + "（#" + str(item["id"]) + "）": item["id"]
-        for item in api_list_knowledge(user_id)
+        node["item"]["id"]: "　" * node["depth"]
+        + ("📁 " if node["item"]["id"] in has_child else "📄 ")
+        + node["item"]["name"]
+        + "（#" + str(node["item"]["id"]) + "）"
+        for node in tree
     }
+
+
+def kb_choices(user_id: int) -> dict:
+    """知识库选择项：{带缩进显示名: id}（分级）。"""
+    labels = kb_label_map(user_id)
+    return {label: kid for kid, label in labels.items()}
 
 
 def page_characters(user_id: int) -> None:
@@ -884,16 +926,24 @@ def page_knowledge(user_id: int) -> None:
         with st.form("create_kb", clear_on_submit=True):
             kb_name = st.text_input("名称 *", placeholder="例如：医疗 AI 行业资料")
             kb_desc = st.text_area("描述", height=70)
+            parent_labels = ["（顶层，作为文件夹或独立库）"] + list(kb_label_map(user_id).values())
+            parent_pick = st.selectbox("放在哪里（分级）", parent_labels)
             if st.form_submit_button("创建", type="primary"):
                 if not kb_name.strip():
                     st.error("名称不能为空")
                 else:
-                    api_create_knowledge(user_id, kb_name.strip(), kb_desc)
+                    label_to_id = {v: k for k, v in kb_label_map(user_id).items()}
+                    api_create_knowledge(
+                        user_id,
+                        kb_name.strip(),
+                        kb_desc,
+                        label_to_id.get(parent_pick),
+                    )
                     st.success("已创建知识库")
                     st.rerun()
 
     with st.expander("⬆️ 上传文件（PDF / DOCX / TXT / MD）", expanded=True):
-        options = ["自动创建新知识库"] + [item["name"] + "（#" + str(item["id"]) + "）" for item in bases]
+        options = ["自动创建新知识库"] + list(kb_label_map(user_id).values())
         target = st.selectbox("上传到", options)
         uploaded = st.file_uploader(
             "选择文件",
@@ -943,11 +993,19 @@ def page_knowledge(user_id: int) -> None:
         st.info("还没有知识库，先上传一个文件吧。")
         return
 
-    st.subheader("知识库列表")
-    for item in bases:
+    st.subheader("知识库列表（分级）")
+    tree = kb_tree(user_id)
+    folder_ids = {node["item"]["parent_id"] for node in tree}
+    for node in tree:
+        item = node["item"]
         with st.container(border=True):
             col1, col2, col3 = st.columns([4, 1, 1])
-            col1.markdown("#### " + item["name"])
+            col1.markdown(
+                "#### "
+                + "　" * node["depth"]
+                + ("📁 " if item["id"] in folder_ids else "📄 ")
+                + item["name"]
+            )
             col1.caption(item["description"] or "暂无描述")
             col2.metric("切片", item["document_count"])
             if col3.button("删除", key="del_kb_" + str(item["id"])):

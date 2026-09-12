@@ -17,4 +17,8 @@ class KnowledgeBase(Base):
     )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # 分级：父节点（为空表示顶层）。"文件夹"就是有子节点的知识库
+    parent_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True, nullable=True
+    )
     created_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

@@ -24,6 +24,7 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "summary_upto_id": "INTEGER NOT NULL DEFAULT 0",
     },
     "messages": {"embedding": "TEXT NOT NULL DEFAULT '[]'"},
+    "knowledge_bases": {"parent_id": "INTEGER"},
 }
 
 

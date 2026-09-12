@@ -61,15 +61,17 @@ class Retriever:
         优先级：显式指定单个 knowledge_id > 传入的 knowledge_ids（角色知识边界）
                 > 该用户的全部知识库
         """
-        owned = {base.id for base in await self.knowledge.list_by_user(user_id)}
+        bases = await self.knowledge.list_by_user(user_id)
+        owned = {base.id for base in bases}
         if knowledge_id is not None:
             if knowledge_id not in owned:
                 raise NotFoundError("知识库不存在或无权访问")
-            return [knowledge_id]
+            # 分级：选中文件夹时自动包含其下所有子库
+            return await self.knowledge.list_descendant_ids(user_id, [knowledge_id])
         if knowledge_ids:
             scoped = [item for item in knowledge_ids if item in owned]
-            return scoped
-        return list(owned)
+            return await self.knowledge.list_descendant_ids(user_id, scoped)
+        return [base.id for base in bases]
 
     async def search(
         self,

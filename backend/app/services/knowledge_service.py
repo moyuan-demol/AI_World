@@ -38,16 +38,23 @@ class KnowledgeService:
             id=base.id,
             name=base.name,
             description=base.description,
+            parent_id=base.parent_id,
             created_time=base.created_time,
             document_count=document_count,
         )
 
     # ------------------------------------------------------------------ #
     async def create(self, user_id: int, payload: KnowledgeCreate) -> KnowledgeOut:
+        parent_id = payload.parent_id
+        if parent_id is not None:
+            # 只能挂到自己的节点下
+            if await self.knowledge.get_for_user(parent_id, user_id) is None:
+                raise NotFoundError("父级知识库不存在或无权访问")
         base = await self.knowledge.create(
             user_id=user_id,
             name=payload.name.strip(),
             description=payload.description or "",
+            parent_id=parent_id,
         )
         await self.session.commit()
         return self._to_out(base, 0)
@@ -71,10 +78,20 @@ class KnowledgeService:
         count = await self.documents.count_by_knowledge(base.id)
         return self._to_out(base, count)
 
+    async def subtree_ids(self, user_id: int, knowledge_id: int) -> list[int]:
+        """自身 + 全部后代（分级：绑定/删除都以整棵子树为单位）。"""
+        await self.get(user_id, knowledge_id)
+        return await self.knowledge.list_descendant_ids(user_id, [knowledge_id])
+
     async def delete(self, user_id: int, knowledge_id: int) -> None:
+        """删除该节点**及其整棵子树**（文档一并清理）。"""
         base = await self.get(user_id, knowledge_id)
-        await self.documents.delete_by_knowledge(base.id)
-        await self.knowledge.delete(base)
+        ids = await self.knowledge.list_descendant_ids(user_id, [base.id])
+        for item in ids:
+            await self.documents.delete_by_knowledge(item)
+            node = await self.knowledge.get(item)
+            if node is not None:
+                await self.knowledge.delete(node)
         await self.session.commit()
 
     async def list_documents(self, user_id: int, knowledge_id: int, limit: int = 200) -> list[Document]:
