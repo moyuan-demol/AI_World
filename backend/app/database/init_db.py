@@ -4,7 +4,19 @@ import logging
 
 from sqlalchemy import inspect, text
 
-from app import models  # noqa: F401  (imports every model so metadata is complete)
+# 显式导入每个模型子模块，确保 Base.metadata 上注册了全部表（create_all 需要）。
+# 注意：app/models/__init__.py 已改为惰性导出（打破包 __init__ 的循环导入死锁），
+# 所以不能再依赖 `from app import models` 的隐式副作用来注册表 —— 那会漏表。
+from app.models import (  # noqa: F401
+    character,
+    character_knowledge,
+    chat,
+    document,
+    knowledge,
+    memory,
+    usage_log,
+    user,
+)
 from app.config.settings import settings
 from app.core.security import hash_password
 from app.database.backup import backup_sqlite_database
