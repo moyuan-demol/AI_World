@@ -1365,7 +1365,7 @@ def page_chat(user_id: int) -> None:
                 if result["sources"]:
                     st.caption("引用来源：" + "；".join(result["sources"]))
                 if result["offline"]:
-                    st.warning("离线演示模式：未配置 DEEPSEEK_API_KEY，以上为本地占位回答。")
+                    st.caption("离线模式：以上为检索到的原始资料（未经模型加工）")
                 st.session_state["conv_" + str(character_id)] = result["conversation_id"]
                 messages.append(
                     {
@@ -1455,7 +1455,7 @@ def page_roundtable(user_id: int) -> None:
                 )
 
         if result["offline"]:
-            st.warning("离线演示模式：未配置 DEEPSEEK_API_KEY，以下为本地占位内容。")
+            st.caption("离线模式：以下为检索到的原始资料（未经模型加工）")
         if result["manager_brief"]:
             st.info("**主持人拆解**\n\n" + result["manager_brief"])
         st.divider()

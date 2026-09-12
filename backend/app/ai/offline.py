@@ -16,14 +16,14 @@ def offline_chat_answer(
     chunks: Sequence[RetrievedChunk],
 ) -> str:
     lines = [
-        "【离线演示模式】未检测到 DEEPSEEK_API_KEY，本回答由本地模板生成。",
+        "【离线模式】未检测到 DEEPSEEK_API_KEY —— 以下是检索到的【原始资料】，未经模型加工（不是答案）。",
         "",
         "角色：" + character_name + ("（" + character_role + "）" if character_role else ""),
         "问题：" + question.strip(),
         "",
     ]
     if chunks:
-        lines.append("检索到 " + str(len(chunks)) + " 条知识库片段，最相关的内容摘要：")
+        lines.append("检索到 " + str(len(chunks)) + " 条资料片段，原文摘要如下（如需成段回答，请配置 API Key）：")
         for index, chunk in enumerate(chunks, start=1):
             snippet = chunk.content.strip().replace("\n", " ")[:160]
             lines.append(str(index) + ". [" + chunk.filename + "] " + snippet)
