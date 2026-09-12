@@ -921,14 +921,21 @@ def sidebar(user_id: int, username: str) -> str:
             st.text_input("API Key", type="password", key="ai_key", placeholder="sk-...")
             preset = st.selectbox("服务商", list(PROVIDER_PRESETS.keys()), key="ai_provider")
             preset_base, preset_models = PROVIDER_PRESETS[preset]
+
+            # ⚠️ Streamlit 不允许在控件创建之后再写它的 key，
+            # 因此所有 session_state 写入都必须发生在 st.text_input 之前。
+            if st.session_state.get("_prev_provider") != preset:
+                st.session_state["_prev_provider"] = preset
+                st.session_state["ai_base"] = preset_base or ""
+            if preset_base and not (st.session_state.get("ai_base") or "").strip():
+                st.session_state["ai_base"] = preset_base
+
             st.text_input(
                 "API Base（兼容 OpenAI 协议）",
                 key="ai_base",
                 placeholder=preset_base or "https://你的服务地址/v1",
                 help="选择服务商后会自动填入；也可手动改成任何兼容 OpenAI 协议（以 /v1 结尾或 /v4）的地址。",
             )
-            if preset_base and not (st.session_state.get("ai_base") or "").strip():
-                st.session_state.ai_base = preset_base
 
             model_options = list(preset_models) + ["自定义"]
             if st.session_state.get("ai_model_pick") not in model_options:
