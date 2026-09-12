@@ -127,6 +127,7 @@ from app.schemas.character import CharacterCreate  # noqa: E402
 from app.schemas.knowledge import KnowledgeCreate, KnowledgeOut  # noqa: E402
 from app.schemas.roundtable import AgentSpec, RoundtableRequest  # noqa: E402
 from app.schemas.user import UserCreate, UserLogin  # noqa: E402
+from app.services.admin_service import AdminService  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402
 from app.services.character_service import CharacterService  # noqa: E402
 from app.services.chat_service import ChatService  # noqa: E402
@@ -819,6 +820,52 @@ def api_usage_summary(user_id: int, hours: int = 24) -> dict:
     return db_call(handler)
 
 
+# --------------------------------------------------------------------------- #
+# 站长只读数据查看（方案 B）：走 db_call 直接调用 AdminService（显式越权通道）
+# 这些助手只读；全部复用「📊 用量统计」页的管理员口令保护。
+# --------------------------------------------------------------------------- #
+def api_admin_users_overview() -> list[dict]:
+    async def handler(session):
+        return await AdminService(session).overview()
+
+    return db_call(handler)
+
+
+def api_admin_characters(user_id: int) -> list[dict]:
+    async def handler(session):
+        return await AdminService(session).characters(user_id)
+
+    return db_call(handler)
+
+
+def api_admin_knowledge(user_id: int) -> list[dict]:
+    async def handler(session):
+        return await AdminService(session).knowledge(user_id)
+
+    return db_call(handler)
+
+
+def api_admin_document_chunks(user_id: int, document_id: int, limit: int = 50) -> dict:
+    async def handler(session):
+        return await AdminService(session).document_chunks(user_id, document_id, limit=limit)
+
+    return db_call(handler)
+
+
+def api_admin_conversations(user_id: int) -> list[dict]:
+    async def handler(session):
+        return await AdminService(session).conversations(user_id)
+
+    return db_call(handler)
+
+
+def api_admin_messages(conversation_id: int, limit: int = 200) -> list[dict]:
+    async def handler(session):
+        return await AdminService(session).conversation_messages(conversation_id, limit=limit)
+
+    return db_call(handler)
+
+
 def sidebar(user_id: int, username: str) -> str:
     with st.sidebar:
         st.markdown("### 🌍 AI World")
@@ -1507,6 +1554,195 @@ def page_roundtable(user_id: int) -> None:
             st.markdown(result["summary"])
 
 
+def admin_kb_tree(bases: list[dict]) -> list[dict]:
+    """把 AdminService 返回的扁平知识库列表整理成树形顺序（与 kb_tree 同构）。
+
+    为什么单独写一份：普通页面走的是"当前登录用户"的 api_list_knowledge，
+    这里的数据来自站长的越权只读通道，字段来源不同，不能直接复用。
+    """
+    by_parent: dict = {}
+    for item in bases:
+        by_parent.setdefault(item.get("parent_id"), []).append(item)
+
+    ordered: list[dict] = []
+    seen: set[int] = set()
+
+    def walk(parent_id, depth: int) -> None:
+        for item in by_parent.get(parent_id, []):
+            if item["id"] in seen:
+                continue
+            seen.add(item["id"])
+            ordered.append({"item": item, "depth": depth})
+            walk(item["id"], depth + 1)
+
+    walk(None, 0)
+    for item in bases:  # 兜底：父节点缺失的孤儿节点，保证不会"消失不见"
+        if item.get("id", -1) not in seen:
+            ordered.append({"item": item, "depth": 0})
+            seen.add(item.get("id", -1))
+    return ordered
+
+
+def page_admin_data() -> None:
+    """站长只读数据查看（方案 B）。
+
+    为什么放在「📊 用量统计」页的下半部分：
+    复用同一口令体系（admin_password() + st.session_state["admin_ok"]），
+    不额外增加导航项，现有 AppTest 的页面列表因此完全不受影响。
+    本区块**全部只读**：只提供查询与展示，不提供任何写/删操作。
+    """
+    st.subheader("🛠 站长数据")
+    st.caption("仅站长可见，只读")
+
+    overview = api_admin_users_overview()
+    if not overview:
+        st.info("暂无用户。")
+        return
+
+    st.markdown("**用户总览**")
+    st.dataframe(
+        [
+            {
+                "用户": row["username"],
+                "角色": row["role"],
+                "注册时间": row["created_time"] or "-",
+                "AI伙伴数": row["character_count"],
+                "知识库数": row["knowledge_count"],
+                "文档切片数": row["document_count"],
+                "消息数": row["message_count"],
+                "最后活跃": row["last_active"] or "从未使用",
+            }
+            for row in overview
+        ]
+    )
+
+    labels = {
+        row["username"] + "（#" + str(row["user_id"]) + "）": row["user_id"] for row in overview
+    }
+    picked = st.selectbox("选择用户", list(labels.keys()), key="admin_user_pick")
+    target = labels[picked]
+
+    tab_char, tab_kb, tab_chat = st.tabs(["AI 伙伴", "知识库与切片", "对话记录"])
+
+    with tab_char:
+        characters = api_admin_characters(target)
+        if not characters:
+            st.caption("该用户没有 AI 伙伴。")
+        for item in characters:
+            with st.container(border=True):
+                st.markdown("#### " + item["name"])
+                st.caption(item["role"] or "AI 伙伴")
+                st.write("人格：" + (item["personality"] or "—"))
+                st.write("专长：" + (item["expertise"] or "—"))
+                st.write("说话方式：" + (item["speaking_style"] or "—"))
+                if item["knowledge_ids"]:
+                    st.write("知识边界：#" + "、#".join(str(kid) for kid in item["knowledge_ids"]))
+                else:
+                    st.caption("知识边界：未绑定（检索该用户全部知识库）")
+
+    with tab_kb:
+        bases = api_admin_knowledge(target)
+        if not bases:
+            st.caption("该用户没有知识库。")
+        else:
+            tree = admin_kb_tree(bases)
+            folder_ids = {node["item"].get("parent_id") for node in tree}
+            doc_options: dict = {}
+            for node in tree:
+                item = node["item"]
+                icon = "📁" if item["id"] in folder_ids else "📄"
+                st.markdown(
+                    "#### "
+                    + "　" * node["depth"]
+                    + icon
+                    + " "
+                    + item["name"]
+                    + "（切片 "
+                    + str(item["document_count"])
+                    + "）"
+                )
+                if item["description"]:
+                    st.caption(item["description"])
+                documents = item.get("documents") or []
+                if not documents:
+                    st.caption("没有文档。")
+                for document in documents:
+                    doc_options[
+                        "　" * node["depth"]
+                        + item["name"]
+                        + " / "
+                        + document["filename"]
+                        + "（"
+                        + str(document["chunk_count"])
+                        + " 切片）"
+                    ] = document["document_id"]
+                    st.caption(
+                        document["filename"]
+                        + " · "
+                        + str(document["chunk_count"])
+                        + " 切片 · 上传 "
+                        + (document["created_time"] or "-")
+                    )
+            if doc_options:
+                st.divider()
+                st.markdown("**查看切片正文**")
+                chunk_limit = st.slider(
+                    "最多显示切片数", min_value=1, max_value=100, value=20, key="admin_chunk_limit"
+                )
+                chosen = st.selectbox("选择文档", list(doc_options.keys()), key="admin_doc_pick")
+                try:
+                    result = api_admin_document_chunks(
+                        target, doc_options[chosen], limit=int(chunk_limit)
+                    )
+                except Exception as error:  # noqa: BLE001
+                    st.error(redact_credentials(type(error).__name__ + ": " + str(error)))
+                else:
+                    st.caption(
+                        "共 "
+                        + str(result["total"])
+                        + " 条切片，显示前 "
+                        + str(len(result["chunks"]))
+                        + " 条。"
+                    )
+                    for chunk in result["chunks"]:
+                        st.caption("#" + str(chunk["chunk_index"]))
+                        st.text(chunk["content"][:800])
+
+    with tab_chat:
+        conversations = api_admin_conversations(target)
+        if not conversations:
+            st.caption("该用户没有对话。")
+        else:
+            st.dataframe(
+                [
+                    {
+                        "对话": row["title"],
+                        "AI伙伴": row["character_name"] or "-",
+                        "消息数": row["message_count"],
+                        "创建时间": row["created_time"] or "-",
+                    }
+                    for row in conversations
+                ]
+            )
+            conv_labels = {
+                "#"
+                + str(row["id"])
+                + " "
+                + row["title"]
+                + "（"
+                + str(row["message_count"])
+                + " 条）": row["id"]
+                for row in conversations
+            }
+            chosen_conv = st.selectbox(
+                "选择对话", list(conv_labels.keys()), key="admin_conv_pick"
+            )
+            for message in api_admin_messages(conv_labels[chosen_conv]):
+                role = "🧑 用户" if message["role"] == "user" else "🤖 助手"
+                st.markdown("**" + role + "** · " + (message["created_time"] or "-"))
+                st.text(message["content"][:2000])
+
+
 def page_usage(user_id: int) -> None:
     st.title("📊 用量统计")
     st.caption(
@@ -1556,6 +1792,10 @@ def page_usage(user_id: int) -> None:
     st.caption(
         "说明：Streamlit Cloud 免费实例的文件系统是临时的，重启/重新部署后本表会清空（演示用途足够）。"
     )
+
+    # 同一口令下的站长只读数据查看（方案 B）
+    st.divider()
+    page_admin_data()
 
 
 # --------------------------------------------------------------------------- #
