@@ -558,6 +558,25 @@ def module_staleness() -> list[str]:
     return missing
 
 
+def search_label_map() -> dict:
+    """{界面显示标签: provider 内部名称}。
+
+    踩过的坑：多选框存的是**显示标签**，而检索工具需要**内部名称**（wikipedia 等）；
+    旧代码直接把标签当名称传进去 → 全部来源匹配失败 → 联网静默失效。
+    """
+    return {
+        cls.label + "（" + name + "）": name for name, cls in PROVIDER_CLASSES.items()
+    }
+
+
+def selected_search_providers() -> list[str]:
+    """把界面选择安全地翻译成内部名称；识别不出来就回落到默认来源。"""
+    labels = search_label_map()
+    picked = st.session_state.get("web_providers") or []
+    names = [labels[item] for item in picked if item in labels]
+    return names or default_search_providers()
+
+
 def default_search_providers() -> list[str]:
     """防御式读取默认来源：即使云端模块与脚本版本不一致也不会崩。"""
     raw = getattr(settings, "search_providers", "") or "wikipedia"
@@ -568,9 +587,8 @@ def session_search_tool() -> WebSearchTool | None:
     """访客在侧边栏开启联网检索时，返回一个检索工具；否则 None。"""
     if not st.session_state.get("web_enabled"):
         return None
-    names = st.session_state.get("web_providers") or default_search_providers()
     return WebSearchTool(
-        list(names),
+        selected_search_providers(),
         api_key=(st.session_state.get("web_key") or settings.search_api_key),
         base_url=(st.session_state.get("web_base") or settings.search_base_url),
     )
@@ -735,9 +753,7 @@ def sidebar(user_id: int, username: str) -> str:
             )
             st.checkbox("启用联网检索", key="web_enabled")
             if st.session_state.get("web_enabled"):
-                label_to_name = {
-                    cls.label + "（" + name + "）": name for name, cls in PROVIDER_CLASSES.items()
-                }
+                label_to_name = search_label_map()
                 default_names = default_search_providers()
                 defaults = [
                     label for label, name in label_to_name.items() if name in default_names
