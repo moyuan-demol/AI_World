@@ -551,6 +551,17 @@ st.set_page_config(page_title="AI World · AI 世界", page_icon="🌍", layout=
 MODULES = ["我的世界", "AI伙伴", "知识世界", "AI聊天", "AI圆桌"]
 USAGE_PAGE = "📊 用量统计"
 
+# 页面 <-> URL 参数（只放页面名，**绝不放** user_id / token / 知识库 id）
+PAGE_SLUG = {
+    "我的世界": "home",
+    "AI伙伴": "characters",
+    "知识世界": "knowledge",
+    "AI聊天": "chat",
+    "AI圆桌": "roundtable",
+    USAGE_PAGE: "usage",
+}
+SLUG_PAGE = {slug: label for label, slug in PAGE_SLUG.items()}
+
 
 def admin_password() -> str:
     """站点管理员口令（在 Secrets 里配 APP_ADMIN_PASSWORD）。
@@ -763,7 +774,21 @@ def sidebar(user_id: int, username: str) -> str:
     with st.sidebar:
         st.markdown("### 🌍 AI World")
         st.caption("个人/企业级 AI 智能空间")
-        page = st.radio("导航", nav_items(), label_visibility="collapsed")
+        items = nav_items()
+        # URL 同步：刷新/分享链接能停在当前页；未知参数一律回落到首页（白名单校验）
+        requested = str(st.query_params.get("page", "home") or "home")
+        default_label = SLUG_PAGE.get(requested, items[0])
+        if default_label not in items:
+            default_label = items[0]
+        page = st.radio(
+            "导航",
+            items,
+            index=items.index(default_label),
+            label_visibility="collapsed",
+        )
+        target_slug = PAGE_SLUG.get(page, "home")
+        if str(st.query_params.get("page", "")) != target_slug:
+            st.query_params["page"] = target_slug
         st.divider()
 
         stale = module_staleness()
