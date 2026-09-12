@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import settings
 from app.core.errors import NotFoundError
 from app.models.document import Document
+from app.rag.bm25 import bm25_search, reciprocal_rank_fusion
 from app.rag.embedding import EmbeddingConfig, embed_query
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
@@ -95,26 +96,47 @@ class Retriever:
         if not query_vector:
             return []
 
-        scored: list[RetrievedChunk] = []
+        # ---- 通道 1：稠密向量（语义相近），并应用最低相关性阈值 ----
+        dense: list[tuple[float, Document]] = []
         for document in documents:
             try:
                 vector = json.loads(document.embedding or "[]")
             except json.JSONDecodeError:
                 continue
             score = cosine_similarity(query_vector, vector)
-            # 最低相关性阈值：低于它的一律丢弃（避免只共享一两个常见字就被当成相关）
             if score < settings.retrieval_min_score:
                 continue
-            scored.append(
+            dense.append((score, document))
+
+        # ---- 通道 2：BM25 稀疏检索（精确术语/缩写/专有名词）----
+        sparse = bm25_search(query, documents, limit=max(10, (top_k or settings.retrieval_top_k) * 4))
+
+        # ---- RRF 融合：两路按"排名"合并，取长补短 ----
+        ranked = reciprocal_rank_fusion(
+            [document.id for _score, document in dense],
+            [document.id for _score, document in sparse],
+        )
+        by_id: dict[int, Document] = {}
+        dense_score: dict[int, float] = {}
+        for score, document in dense:
+            by_id[document.id] = document
+            dense_score[document.id] = score
+        for _score, document in sparse:
+            by_id.setdefault(document.id, document)
+
+        results: list[RetrievedChunk] = []
+        for doc_id, _rrf in ranked:
+            document = by_id.get(doc_id)
+            if document is None:
+                continue
+            results.append(
                 RetrievedChunk(
                     document_id=document.id,
                     knowledge_id=document.knowledge_id,
                     filename=document.filename,
                     chunk_index=document.chunk_index,
                     content=document.content,
-                    score=round(score, 6),
+                    score=round(dense_score.get(doc_id, 0.0), 6),
                 )
             )
-
-        scored.sort(key=lambda chunk: chunk.score, reverse=True)
-        return scored[: (top_k or settings.retrieval_top_k)]
+        return results[: (top_k or settings.retrieval_top_k)]
