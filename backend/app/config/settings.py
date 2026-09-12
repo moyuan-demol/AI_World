@@ -39,8 +39,10 @@ class Settings(BaseSettings):
     # ---- DeepSeek / LLM ----
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
-    # 注意：deepseek-chat / deepseek-reasoner 已于 2026-07-24 停用，
-    # 请使用 deepseek-v4-flash（默认）/ deepseek-v4-pro / deepseek-v4-flash-vision-exp
+    # 注意：deepseek-chat / deepseek-reasoner 已于 2026-07-24 停用。
+    # 稳定可选：deepseek-v4-flash（默认）/ deepseek-v4-pro / deepseek-v4-flash-vision-exp
+    # 4.1 为限时内测（ID 形如 deepseek-v4.1-flash-expires-on-0910），到期即失效，
+    # 官方明确不建议硬编码，故不作为默认值。
     deepseek_model: str = "deepseek-v4-flash"
     ai_timeout_seconds: float = 90.0
     ai_temperature: float = 0.7

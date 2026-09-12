@@ -396,7 +396,13 @@ def session_ai_client() -> AIClient | None:
     return AIClient(api_key=key, base_url=base or None, model=active_model_name())
 
 
-KNOWN_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
+KNOWN_MODELS = [
+    "deepseek-v4-flash",                      # 稳定版（默认）
+    "deepseek-v4-pro",                        # 稳定版（更强）
+    "deepseek-v4-flash-vision-exp",           # 多模态/视觉
+    "deepseek-v4.1-flash-expires-on-0910",    # 4.1 限时内测 ID，到期即失效
+    "deepseek-flash",                         # 正式标准标识
+]
 
 
 def active_model_name() -> str:
@@ -521,6 +527,7 @@ def sidebar(user_id: int, username: str) -> str:
                 st.text_input("自定义模型名", key="ai_model", placeholder="例如 your-model-name")
             st.caption(
                 "deepseek-chat / deepseek-reasoner 已于 2026-07-24 停用，请使用 v4 系列。"
+                "带 expires-on 的 4.1 内测 ID 到期即失效，官方不建议硬编码。"
                 "也可填任何兼容 OpenAI 协议的服务地址与模型名。"
             )
 
