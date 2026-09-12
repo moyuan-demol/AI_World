@@ -11,6 +11,7 @@ from app.core.errors import NotFoundError
 from app.models.document import Document
 from app.rag.bm25 import bm25_search, reciprocal_rank_fusion
 from app.rag.embedding import EmbeddingConfig, embed_query
+from app.rag.rerank import rerank
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
 
@@ -23,6 +24,81 @@ class RetrievedChunk:
     chunk_index: int
     content: str
     score: float
+
+
+def _document_key(chunk: RetrievedChunk) -> tuple[int, str]:
+    """同一篇文档的标识：(知识库, 文件名)。
+
+    说明：RetrievedChunk.document_id 在本项目里是"切片行 id"（每条切片唯一），
+    若以它作为多样性分组键会永远不生效；真正标识"同一篇文档"的是文件名（加知识库）。
+    这也是唯一能实现"让多篇文档都进入上下文"这一目的的解释。
+    """
+    return (chunk.knowledge_id, chunk.filename)
+
+
+def _merge_run(run: list[RetrievedChunk]) -> RetrievedChunk:
+    """把一段连续切片合并成一条（small-to-big 的最小单元）。"""
+    first = run[0]
+    return RetrievedChunk(
+        # 合并后用组内最小切片 id 作为代表，保证结果稳定、可复现
+        document_id=min(chunk.document_id for chunk in run),
+        knowledge_id=first.knowledge_id,
+        filename=first.filename,
+        chunk_index=first.chunk_index,
+        content="\n".join(chunk.content or "" for chunk in run),
+        score=max(chunk.score for chunk in run),
+    )
+
+
+def merge_adjacent_chunks(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    """small-to-big：把同一文档里 chunk_index 相邻（差 <= 1）的命中切片合并成一段。
+
+    为什么这样做：一篇文档被切成 4 条相邻切片都命中时，给模型 4 条割裂的片段
+    不如给 1 段连贯上下文 —— 语义完整、token 更省、引用也更清晰。
+    合并段之间按"组内最早命中的原始排名"排序，保持与 RRF 结果一致。
+    """
+    if not chunks:
+        return []
+    # 记录每条切片在输入里的次序（输入已按 RRF 排名降序）
+    order = {id(chunk): index for index, chunk in enumerate(chunks)}
+    grouped: dict[tuple[int, str], list[RetrievedChunk]] = {}
+    for chunk in chunks:
+        grouped.setdefault(_document_key(chunk), []).append(chunk)
+
+    merged: list[tuple[int, RetrievedChunk]] = []
+    for items in grouped.values():
+        ordered = sorted(items, key=lambda chunk: chunk.chunk_index)
+        run_start = 0
+        for index in range(1, len(ordered) + 1):
+            # 到达末尾，或与下一条不再相邻 -> 结算当前连续段
+            if (
+                index == len(ordered)
+                or ordered[index].chunk_index - ordered[index - 1].chunk_index > 1
+            ):
+                run = ordered[run_start:index]
+                merged.append((min(order[id(chunk)] for chunk in run), _merge_run(run)))
+                run_start = index
+    merged.sort(key=lambda item: item[0])
+    return [chunk for _rank, chunk in merged]
+
+
+def limit_per_document(chunks: list[RetrievedChunk], max_per_document: int) -> list[RetrievedChunk]:
+    """同文档多样性限制：同一篇文档最多保留 max_per_document 条。
+
+    为什么这样做：否则一篇长文档会把 top_k 全部占满，其它文档永远进不了上下文。
+    max_per_document <= 0 表示不限制。
+    """
+    if max_per_document is None or max_per_document <= 0:
+        return list(chunks)
+    counts: dict[tuple[int, str], int] = {}
+    kept: list[RetrievedChunk] = []
+    for chunk in chunks:
+        key = _document_key(chunk)
+        if counts.get(key, 0) >= max_per_document:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        kept.append(chunk)
+    return kept
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -139,4 +215,10 @@ class Retriever:
                     score=round(dense_score.get(doc_id, 0.0), 6),
                 )
             )
-        return results[: (top_k or settings.retrieval_top_k)]
+        # ---- 后处理三步（顺序有讲究）----
+        # 1) 相邻切片合并：先把"割裂的小切片"拼成连贯上下文；
+        # 2) 同文档多样性：再限制同一篇文档的条数，给其它文档留位置；
+        # 3) Rerank 精排：最后按"与原问题的贴合度"重排，再截断 top_k。
+        merged = merge_adjacent_chunks(results)
+        diverse = limit_per_document(merged, settings.retrieval_max_per_document)
+        return rerank(query, diverse, top_k or settings.retrieval_top_k)

@@ -144,7 +144,15 @@ class Settings(BaseSettings):
     # 检索最低相关性阈值（实测标定：不相关 <=0.13，相关 >=0.238，故取 0.18）
     # ⚠️ 该值取决于向量模型：换用外部语义向量服务后应重新标定
     retrieval_min_score: float = 0.18
+    # 同一篇文档（同一文件）在最终结果里最多保留几条：
+    # 合并相邻切片后仍可能出现同一文件的多段命中，限制它能保证"多篇文档"都能进入上下文。
+    retrieval_max_per_document: int = 2
     max_context_chars: int = 6000
+
+    # ---- 普通模式查询改写（需要模型；未配置/失败时自动回退原问题，见 chat_service）----
+    query_rewrite_enabled: bool = True
+    # 超过该字数（或多个问句/并列连接词）才值得花一次模型调用做改写
+    query_rewrite_min_chars: int = 20
 
     # ---- Auth ----
     jwt_secret: str = "ai-world-dev-secret-change-me"

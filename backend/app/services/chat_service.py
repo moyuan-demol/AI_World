@@ -13,14 +13,20 @@ from app.ai.prompts import build_character_system_prompt, build_context_block, b
 from app.config.settings import settings
 from app.core.errors import NotFoundError
 from app.models.chat import Conversation, Message
+from app.rag.bm25 import reciprocal_rank_fusion
 from app.rag.embedding import EmbeddingConfig, embed_query
+from app.rag.meta_query import build_meta_chunks, is_meta_question
 from app.rag.multi_agent import MultiAgentRag
+from app.rag.query_rewrite import build_rewrite_messages, needs_rewrite, parse_rewritten_queries
 from app.rag.rag_service import RagService
+from app.rag.rerank import rerank
 from app.rag.retriever import RetrievedChunk, cosine_similarity
 from app.tools.web_search import WebSearchTool
 from app.repositories.character_repository import CharacterRepository
 from app.repositories.character_knowledge_repository import CharacterKnowledgeRepository
 from app.repositories.chat_repository import ConversationRepository, MessageRepository
+from app.repositories.document_repository import DocumentRepository
+from app.repositories.knowledge_repository import KnowledgeRepository
 from app.repositories.memory_repository import MemoryRepository
 from app.schemas.chat import AgentStepOut, ChatRequest, ChatResponse, SourceOut
 
@@ -84,12 +90,17 @@ class ChatService:
         context_block = ""
         chunks = []
         if payload.use_knowledge:
-            context_block, chunks = await self.rag.build_context(
-                user_id=user_id,
-                query=payload.message,
-                knowledge_id=payload.knowledge_id,
-                knowledge_ids=scoped_ids or None,
-            )
+            if is_meta_question(payload.message):
+                # 元信息类问题（作者/页数/上传时间/文件名…）：跳过向量检索，
+                # 直接用文档元数据组织上下文，既准确又省 token
+                context_block, chunks = await self._meta_context(
+                    user_id, payload.knowledge_id, scoped_ids
+                )
+            else:
+                # 普通模式：可选的查询改写（需要模型，失败自动降级）+ 多路 RRF 融合 + 精排
+                context_block, chunks = await self._knowledge_context(
+                    user_id, payload.message, payload.knowledge_id, scoped_ids
+                )
 
         # 外部世界接口：把网页资料并入上下文（失败会自动降级，不阻塞回答）
         web_chunks, web_reports = await self._fetch_web(payload.message, payload.use_web)
@@ -220,6 +231,140 @@ class ChatService:
             for report in outcome.reports
         ]
         return chunks, reports
+
+    # ------------------------------------------------------------------ #
+    async def _knowledge_context(
+        self,
+        user_id: int,
+        question: str,
+        knowledge_id: int | None,
+        scoped_ids: list[int],
+    ) -> tuple[str, list[RetrievedChunk]]:
+        """普通模式上下文：可选查询改写 -> 多路检索 -> RRF 融合 -> Rerank 精排。"""
+        queries = await self._rewrite_queries(question)
+        if len(queries) <= 1:
+            # 未启用/未改写/只得到一条查询：保持原有单路检索行为
+            return await self.rag.build_context(
+                user_id=user_id,
+                query=queries[0] if queries else question,
+                knowledge_id=knowledge_id,
+                knowledge_ids=scoped_ids or None,
+            )
+
+        # 多路检索：每路先独立跑完整的"混合检索 + 合并 + 多样性 + 精排"，
+        # 再用 RRF 按排名融合（两路量纲不同也能安全合并）。
+        rankings: list[list[int]] = []
+        collected: dict[int, RetrievedChunk] = {}
+        for query in queries:
+            results = await self.rag.retrieve(
+                user_id=user_id,
+                query=query,
+                knowledge_id=knowledge_id,
+                knowledge_ids=scoped_ids or None,
+            )
+            rankings.append([chunk.document_id for chunk in results])
+            for chunk in results:
+                collected.setdefault(chunk.document_id, chunk)
+
+        fused = reciprocal_rank_fusion(*rankings)
+        merged = [collected[doc_id] for doc_id, _score in fused if doc_id in collected]
+        # 融合后用"用户原问题"再做一次精排，保证最终仍以原始意图为准
+        reranked = rerank(question, merged, settings.retrieval_top_k)
+        context = build_context_block(reranked)
+        if len(context) > settings.max_context_chars:
+            context = context[: settings.max_context_chars]
+        return context, reranked
+
+    async def _rewrite_queries(self, question: str) -> list[str]:
+        """查询改写（需要模型）：返回 1..4 条检索查询。
+
+        优雅降级是硬要求：未配置模型 / 未达到触发条件 / 调用异常 / 输出为空，
+        一律返回 [原问题]，绝不因为改写失败而影响正常回答。
+        """
+        fallback = [question]
+        if not settings.query_rewrite_enabled:
+            return fallback
+        # FakeAI 与真实客户端都有 is_configured；缺失时按"未配置"处理
+        if not getattr(self.ai, "is_configured", False):
+            return fallback
+        if not needs_rewrite(question, settings.query_rewrite_min_chars):
+            return fallback
+        try:
+            result = await self.ai.chat(
+                build_rewrite_messages(question),
+                temperature=0.1,
+                max_tokens=200,
+            )
+        except Exception:
+            logger.warning("查询改写调用失败，回退为原问题检索", exc_info=True)
+            return fallback
+
+        rewrites = parse_rewritten_queries(getattr(result, "text", "") or "")
+        if not rewrites:
+            return fallback
+        # 始终保留原问题作为一路查询：这是召回下限，改写失手时也不至于更差
+        queries = list(rewrites)
+        if question.strip() and question.strip() not in queries:
+            queries.append(question)
+        return queries
+
+    async def _meta_context(
+        self,
+        user_id: int,
+        knowledge_id: int | None,
+        scoped_ids: list[int],
+    ) -> tuple[str, list[RetrievedChunk]]:
+        """元信息直答：用文档元数据组织上下文，不走向量检索。"""
+        documents = await self._meta_documents(user_id, knowledge_id, scoped_ids)
+        chunks = build_meta_chunks(documents)
+        context = build_context_block(chunks)
+        if len(context) > settings.max_context_chars:
+            context = context[: settings.max_context_chars]
+        return context, chunks
+
+    async def _meta_documents(
+        self,
+        user_id: int,
+        knowledge_id: int | None,
+        scoped_ids: list[int],
+    ) -> list[dict]:
+        """按与检索一致的"知识边界"收集文档元数据（同一文件聚合为一条）。"""
+        knowledge_repo = KnowledgeRepository(self.session)
+        bases = await knowledge_repo.list_by_user(user_id)
+        owned = {base.id for base in bases}
+        if knowledge_id is not None:
+            if knowledge_id not in owned:
+                return []
+            scope = await knowledge_repo.list_descendant_ids(user_id, [knowledge_id])
+        elif scoped_ids:
+            scope = await knowledge_repo.list_descendant_ids(
+                user_id, [item for item in scoped_ids if item in owned]
+            )
+        else:
+            scope = [base.id for base in bases]
+        if not scope:
+            return []
+
+        records = await DocumentRepository(self.session).list_by_knowledge_ids(scope)
+        grouped: dict[tuple[int, str], dict] = {}
+        for record in records:
+            key = (record.knowledge_id, record.filename)
+            item = grouped.get(key)
+            if item is None:
+                item = {
+                    "knowledge_id": record.knowledge_id,
+                    "filename": record.filename,
+                    "created_time": record.created_time,
+                    "chunk_count": 0,
+                    "contents": [],
+                }
+                grouped[key] = item
+            item["chunk_count"] += 1
+            item["contents"].append(record.content or "")
+            # 同一文件的切片同一批写入，取第一个非空上传时间即可
+            if item.get("created_time") is None:
+                item["created_time"] = record.created_time
+        return list(grouped.values())
 
     async def _memory_block(self, user_id: int, character_id: int) -> str:
         """把长期记忆注入 system prompt（角色专属 + 全局，按最近写入取有限条）。"""
