@@ -147,7 +147,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24 * 7
 
     # ---- Uploads ----
-    allowed_extensions: str = ".pdf,.txt,.md,.docx"
+    allowed_extensions: str = ".pdf,.txt,.md,.docx,.csv,.xlsx,.pptx,.html"
     max_upload_mb: int = 20
 
     # ---- CORS ----

@@ -41,7 +41,7 @@ def validate_signature(filename: str, data: bytes) -> None:
         raise ValidationError("文件内容为空")
     if suffix == ".pdf" and not data.lstrip()[:4].startswith(_PDF_SIGNATURE):
         raise ValidationError("文件内容不是有效的 PDF（签名校验失败）")
-    if suffix == ".docx" and not data.startswith(_ZIP_SIGNATURES):
-        raise ValidationError("文件内容不是有效的 DOCX（签名校验失败）")
-    if suffix in {".txt", ".md"} and b"\x00" in data[:2048]:
+    if suffix in {".docx", ".xlsx", ".xlsm", ".pptx"} and not data.startswith(_ZIP_SIGNATURES):
+        raise ValidationError("文件内容与扩展名不符（签名校验失败）")
+    if suffix in {".txt", ".md", ".csv", ".html", ".htm"} and b"\x00" in data[:2048]:
         raise ValidationError("文本文件包含二进制内容，已拒绝上传")

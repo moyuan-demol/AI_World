@@ -536,11 +536,17 @@ def session_embedding_config() -> EmbeddingConfig | None:
     return EmbeddingConfig(provider="openai", api_base=base, api_key=key, model=model)
 
 
+def default_search_providers() -> list[str]:
+    """防御式读取默认来源：即使云端模块与脚本版本不一致也不会崩。"""
+    raw = getattr(settings, "search_providers", "") or "wikipedia"
+    return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
 def session_search_tool() -> WebSearchTool | None:
     """访客在侧边栏开启联网检索时，返回一个检索工具；否则 None。"""
     if not st.session_state.get("web_enabled"):
         return None
-    names = st.session_state.get("web_providers") or settings.search_provider_list
+    names = st.session_state.get("web_providers") or default_search_providers()
     return WebSearchTool(
         list(names),
         api_key=(st.session_state.get("web_key") or settings.search_api_key),
@@ -702,7 +708,7 @@ def sidebar(user_id: int, username: str) -> str:
                 label_to_name = {
                     cls.label + "（" + name + "）": name for name, cls in PROVIDER_CLASSES.items()
                 }
-                default_names = settings.search_provider_list
+                default_names = default_search_providers()
                 defaults = [
                     label for label, name in label_to_name.items() if name in default_names
                 ]
