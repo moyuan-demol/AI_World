@@ -6,13 +6,13 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config.settings import settings
 from app.core.errors import PermissionDeniedError
 from app.core.ratelimit import RateLimiter
 from app.core.security import decode_access_token
 from app.database.session import get_session
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
+from app.services.auth_service import AuthService
 
 bearer_scheme = HTTPBearer(auto_error=False, description="JWT access token")
 
@@ -53,10 +53,8 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
 def is_admin(user: User) -> bool:
-    """管理员判定：users.role == admin，或用户名出现在 ADMIN_USERNAMES 中。"""
-    if (getattr(user, "role", "") or "") == "admin":
-        return True
-    return user.username in settings.admin_username_list
+    """管理员判定：统一委托给 AuthService.is_admin，保证规则只有一份。"""
+    return AuthService.is_admin(user)
 
 
 async def require_admin(user: CurrentUser) -> User:

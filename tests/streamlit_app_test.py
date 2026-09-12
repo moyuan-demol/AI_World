@@ -10,6 +10,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# 断言文案里带 emoji（「📊 用量统计」），而 Windows 控制台默认是 GBK：
+# 不切 UTF-8 会在 print 时抛 UnicodeEncodeError，测试还没跑完就崩。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+
 # 数据安全：测试必须使用独立的临时数据库，绝不能碰 data/database.db（真实数据）。
 # 必须在应用读取配置之前设置环境变量。
 _TEST_DIR = Path(tempfile.mkdtemp(prefix="ai_world_streamlit_test_"))
@@ -24,7 +32,24 @@ if str(ROOT) not in sys.path:
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 PAGES = ["我的世界", "AI伙伴", "知识世界", "AI聊天", "AI圆桌"]
+USAGE_PAGE = "📊 用量统计"
 FAILURES: list[str] = []
+
+# 模拟"普通访客被强行带到站长页"：绕过菜单直接调用页面函数。
+# streamlit_app 底部有 __main__ 守卫，import 不会顺带执行整个 main()。
+FORCE_USAGE_SCRIPT = """
+import sys
+
+sys.path.insert(0, r"{root}")
+
+import streamlit as st
+
+st.session_state["is_admin"] = False
+
+import streamlit_app as app  # noqa: E402
+
+app.page_usage(1)
+""".format(root=str(ROOT))
 
 
 def describe(element) -> str:
@@ -40,13 +65,22 @@ def check(name: str, at: AppTest) -> None:
         print("  [PASS] " + name)
 
 
+def expect(name: str, condition: bool, detail: str = "") -> None:
+    """与 check 不同：这里断言的是一个布尔条件（AppTest 无异常不等于行为正确）。"""
+    if condition:
+        print("  [PASS] " + name)
+    else:
+        FAILURES.append(name + (" -> " + detail if detail else ""))
+        print("  [FAIL] " + name + (" -> " + detail if detail else ""))
+
+
 def main() -> int:
     print("\n== 1. 首次渲染（建表 + 演示账号 + 预置伙伴）==")
     at = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=300)
     at.run()
     check("未登录时显示登录页", at)
 
-    # 现在需要登录才能进入（模拟公共体验账号：临时库里 demo 用户 id=1）
+    # 现在需要登录才能进入（普通访客：临时库里 demo 用户 id=1，未标记站长）
     at.session_state["uid"] = 1
     at.session_state["uname"] = "demo"
     at.run()
@@ -143,6 +177,57 @@ def main() -> int:
         FAILURES.append("自愈失败：预置角色未恢复")
         print("  [FAIL] 自愈失败：预置角色未恢复")
     check("自愈后页面无异常", at)
+
+    print("\n== 7. 站长功能改为账号制：普通访客完全看不到 ==")
+    # 7a 普通用户（session_state 里没有 is_admin）
+    normal_options = list(at.sidebar.radio[0].options)
+    expect(
+        "普通用户(is_admin 缺省)左侧菜单不含「" + USAGE_PAGE + "」",
+        USAGE_PAGE not in normal_options,
+        str(normal_options),
+    )
+    at.session_state["is_admin"] = False
+    at.run()
+    normal_options = list(at.sidebar.radio[0].options)
+    expect(
+        "普通用户(is_admin=False)左侧菜单不含「" + USAGE_PAGE + "」",
+        USAGE_PAGE not in normal_options,
+        str(normal_options),
+    )
+
+    # 7b 强行切到该页（绕过菜单，直接调用页面函数）：只应看到提示，不渲染数据
+    forced = AppTest.from_string(FORCE_USAGE_SCRIPT, default_timeout=300).run()
+    if forced.exception:
+        detail = describe(forced.exception[0])
+        FAILURES.append("非管理员强行进入站长页抛异常 -> " + detail)
+        print("  [FAIL] 非管理员强行进入站长页抛异常 -> " + detail[:180])
+    else:
+        warning_text = " ".join(str(getattr(item, "value", "")) for item in forced.warning)
+        expect(
+            "非管理员强行进入只看到「仅站长账号可见」提示",
+            "仅站长账号可见" in warning_text,
+            warning_text,
+        )
+        metric_labels = [str(getattr(item, "label", "")) for item in forced.metric]
+        expect(
+            "非管理员强行进入不渲染任何用量数据",
+            not forced.metric,
+            str(metric_labels),
+        )
+
+    print("\n== 8. 站长账号（is_admin=True）可见且可正常渲染 ==")
+    at.session_state["is_admin"] = True
+    at.run()
+    admin_options = list(at.sidebar.radio[0].options)
+    expect(
+        "站长左侧菜单包含「" + USAGE_PAGE + "」",
+        USAGE_PAGE in admin_options,
+        str(admin_options),
+    )
+    at.sidebar.radio[0].set_value(USAGE_PAGE).run()
+    check("站长页渲染无异常", at)
+    metric_labels = [str(getattr(item, "label", "")) for item in at.metric]
+    expect("站长页渲染出用量指标「调用次数」", "调用次数" in metric_labels, str(metric_labels))
 
     print("\n" + "=" * 56)
     if FAILURES:

@@ -63,6 +63,18 @@ class AuthService:
         return "admin" if username in settings.admin_username_list else "user"
 
     @staticmethod
+    def is_admin(user) -> bool:
+        """统一的站长判定：role == admin，或用户名出现在 ADMIN_USERNAMES 中。
+
+        为什么放在 AuthService：后端 deps.require_admin 与 Streamlit 登录态共用
+        这一个入口，规则只有一份，避免"菜单看得见、接口却 403"的漂移。
+        user 既可以是 ORM User，也可以是登录响应里的 UserOut（字段同名）。
+        """
+        if (getattr(user, "role", "") or "") == "admin":
+            return True
+        return (getattr(user, "username", "") or "") in settings.admin_username_list
+
+    @staticmethod
     def issue_token(user: User) -> TokenOut:
         return TokenOut(
             access_token=create_access_token(user.id),

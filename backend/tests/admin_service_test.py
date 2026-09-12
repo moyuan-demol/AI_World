@@ -27,15 +27,19 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.config.settings import settings  # noqa: E402
 from app.database.init_db import init_db  # noqa: E402
 from app.database.session import SessionLocal  # noqa: E402
+from app.models.user import User  # noqa: E402
 from app.repositories.chat_repository import ConversationRepository, MessageRepository  # noqa: E402
 from app.repositories.document_repository import DocumentRepository  # noqa: E402
 from app.repositories.usage_repository import UsageRepository  # noqa: E402
 from app.repositories.user_repository import UserRepository  # noqa: E402
 from app.schemas.character import CharacterCreate  # noqa: E402
 from app.schemas.knowledge import KnowledgeCreate  # noqa: E402
+from app.schemas.user import UserOut  # noqa: E402
 from app.services.admin_service import AdminService  # noqa: E402
+from app.services.auth_service import AuthService  # noqa: E402
 from app.services.character_service import CharacterService  # noqa: E402
 from app.services.chat_service import ChatService  # noqa: E402
 from app.services.knowledge_service import KnowledgeService  # noqa: E402
@@ -315,6 +319,52 @@ def run() -> int:
     check("不存在的 user 对话返回空列表", missing_conversations == [], str(missing_conversations))
     check("不存在的对话消息返回空列表", missing_messages == [], str(missing_messages))
     check("不存在的文档抛出明确 NotFoundError", chunks_error == "NotFoundError", chunks_error)
+
+    print("\n== 5. 统一站长判定 AuthService.is_admin（账号制，与 Streamlit 登录态同源）==")
+
+    original_admins = settings.admin_usernames
+    try:
+        settings.admin_usernames = "secret_admin"
+        check(
+            "用户名在 ADMIN_USERNAMES 中 -> 站长",
+            AuthService.is_admin(
+                User(id=1, username="secret_admin", password_hash="x", role="user")
+            ),
+        )
+        check(
+            "role == admin -> 站长（即使不在名单里）",
+            AuthService.is_admin(
+                User(id=2, username="role_admin", password_hash="x", role="admin")
+            ),
+        )
+        check(
+            "普通用户 -> 不是站长",
+            not AuthService.is_admin(
+                User(id=3, username="normal_user", password_hash="x", role="user")
+            ),
+        )
+        # Streamlit 的 _session_from_token 拿到的正是登录响应里的 UserOut
+        check(
+            "登录响应的 UserOut 同样适用（名单命中）",
+            AuthService.is_admin(UserOut(id=4, username="secret_admin", role="user")),
+        )
+        check(
+            "登录响应的 UserOut 同样适用（普通用户）",
+            not AuthService.is_admin(UserOut(id=5, username="normal_user", role="user")),
+        )
+        check(
+            "AuthService._role_for 与 is_admin 规则一致",
+            AuthService._role_for("secret_admin") == "admin"
+            and AuthService._role_for("normal_user") == "user",
+        )
+    finally:
+        settings.admin_usernames = original_admins
+
+    check(
+        "判定结束后恢复 ADMIN_USERNAMES 配置（不污染后续用例）",
+        settings.admin_usernames == original_admins,
+        settings.admin_usernames,
+    )
 
     print("\n" + "=" * 60)
     print("PASSED: " + str(len(PASSED)) + "   FAILED: " + str(len(FAILED)))

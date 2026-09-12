@@ -7,7 +7,9 @@
 - 直接复用 backend/app 的 Service 层（AI 伙伴 / 知识库+RAG / 聊天 / AI 圆桌 / 记忆），
   不需要另外启动 FastAPI 服务，一个 Streamlit 应用就是完整产品；
 - 数据默认落在 SQLite，云端实例重启会重置（演示用途足够，要持久可换 Postgres）；
-- 若在 Streamlit secrets 配置了 APP_PASSWORD，进入前必须输入口令（防止公网被乱刷额度）。
+- 若在 Streamlit secrets 配置了 APP_PASSWORD，进入前必须输入口令（防止公网被乱刷额度）；
+- 站长功能走**账号制**：Secrets 里配 ADMIN_USERNAMES（逗号分隔）后，
+  用该用户名注册/登录才会看到「📊 用量统计」，普通访客完全看不到。
 """
 
 import asyncio
@@ -175,7 +177,7 @@ def db_call(handler):
 
 @st.cache_resource(show_spinner="正在初始化 AI World ...")
 def bootstrap() -> bool:
-    """建表 + 确保公共体验账号存在（幂等）。当前用户由登录态决定，不再自动登录。"""
+    """建表（幂等）。当前用户由登录态决定，不再自动登录、也没有共享演示账号。"""
     run_async(init_db())
     return True
 
@@ -196,7 +198,17 @@ def _character_dict(row) -> dict:
 
 
 def _session_from_token(token) -> dict:
-    return {"uid": token.user.id, "uname": token.user.username}
+    """登录/注册成功后写入会话态。
+
+    为什么把 is_admin 一起写入：站长功能（菜单 + 页面）只看这个登录态，
+    不再读 Secrets 里的口令；判定复用 AuthService.is_admin，与后端
+    /api/admin/* 的 AdminUser 依赖同源，避免出现两套规则各说各话。
+    """
+    return {
+        "uid": token.user.id,
+        "uname": token.user.username,
+        "is_admin": AuthService.is_admin(token.user),
+    }
 
 
 def api_register(username: str, password: str, email: str | None) -> dict:
@@ -597,20 +609,19 @@ PAGE_SLUG = {
 SLUG_PAGE = {slug: label for label, slug in PAGE_SLUG.items()}
 
 
-def admin_password() -> str:
-    """站点管理员口令（在 Secrets 里配 APP_ADMIN_PASSWORD）。
+def is_admin_session() -> bool:
+    """当前登录态是否站长账号（账号制鉴权）。
 
-    未配置时，「用量统计」页面对所有访客隐藏。
+    为什么只读 session_state：登录/注册时已由 AuthService.is_admin 判定并写入，
+    这里不重复查库、也绝不回落到读 Secrets 口令 —— 普通访客连菜单项都看不到。
     """
-    try:
-        return str(st.secrets.get("APP_ADMIN_PASSWORD", "") or "")
-    except Exception:
-        return ""
+    return bool(st.session_state.get("is_admin"))
 
 
 def nav_items() -> list[str]:
     items = list(MODULES)
-    if admin_password():
+    # 站长页只对站长账号可见：普通访客的左侧菜单里完全不存在这一项
+    if is_admin_session():
         items.append(USAGE_PAGE)
     return items
 
@@ -822,7 +833,7 @@ def api_usage_summary(user_id: int, hours: int = 24) -> dict:
 
 # --------------------------------------------------------------------------- #
 # 站长只读数据查看（方案 B）：走 db_call 直接调用 AdminService（显式越权通道）
-# 这些助手只读；全部复用「📊 用量统计」页的管理员口令保护。
+# 这些助手只读；统一由「📊 用量统计」页的站长账号鉴权把守（非站长根本进不来）。
 # --------------------------------------------------------------------------- #
 def api_admin_users_overview() -> list[dict]:
     async def handler(session):
@@ -1030,7 +1041,7 @@ def sidebar(user_id: int, username: str) -> str:
                 "也可填任何兼容 OpenAI 协议的服务地址与模型名。"
             )
 
-        st.caption("所有数据按用户隔离；本演示站点使用共享演示账号。")
+        st.caption("所有数据按账号隔离：别人看不到、也改不了你的内容。")
     return page
 
 
@@ -1587,7 +1598,7 @@ def page_admin_data() -> None:
     """站长只读数据查看（方案 B）。
 
     为什么放在「📊 用量统计」页的下半部分：
-    复用同一口令体系（admin_password() + st.session_state["admin_ok"]），
+    与用量统计共用同一道**站长账号**鉴权（is_admin_session()），
     不额外增加导航项，现有 AppTest 的页面列表因此完全不受影响。
     本区块**全部只读**：只提供查询与展示，不提供任何写/删操作。
     """
@@ -1745,25 +1756,14 @@ def page_admin_data() -> None:
 
 def page_usage(user_id: int) -> None:
     st.title("📊 用量统计")
+    # 账号制鉴权：非站长直接拦下，连用量数据都不查询（更不渲染任何统计）
+    if not is_admin_session():
+        st.warning("该页面仅站长账号可见。")
+        return
     st.caption(
         "记录「谁在什么时候用了什么功能」。只记录元数据："
         "**不记录 API Key，也不记录对话内容**。"
     )
-
-    needed = admin_password()
-    if not needed:
-        st.warning("未配置 APP_ADMIN_PASSWORD（Secrets），该页面不可用。")
-        return
-    if not st.session_state.get("admin_ok"):
-        st.info("该页面仅站点管理员可见。")
-        entered = st.text_input("管理口令", type="password")
-        if st.button("查看", type="primary"):
-            if entered == needed:
-                st.session_state.admin_ok = True
-                st.rerun()
-            else:
-                st.error("口令不正确")
-        return
 
     hours = st.selectbox("统计窗口", [24, 72, 168, 720], index=0, format_func=lambda value: str(value) + " 小时")
     summary = api_usage_summary(user_id, hours=int(hours))
@@ -1793,7 +1793,7 @@ def page_usage(user_id: int) -> None:
         "说明：Streamlit Cloud 免费实例的文件系统是临时的，重启/重新部署后本表会清空（演示用途足够）。"
     )
 
-    # 同一口令下的站长只读数据查看（方案 B）
+    # 同一站长账号下的只读数据查看（方案 B）
     st.divider()
     page_admin_data()
 
@@ -1854,4 +1854,7 @@ def main() -> None:
         page_usage(user_id)
 
 
-main()
+# 守卫：Streamlit 运行脚本时 __name__ == "__main__"，行为不变；
+# 同时让测试可以 import 本模块单独渲染某个页面，而不会顺带执行整个 main()。
+if __name__ == "__main__":
+    main()
