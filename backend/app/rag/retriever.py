@@ -102,7 +102,8 @@ class Retriever:
             except json.JSONDecodeError:
                 continue
             score = cosine_similarity(query_vector, vector)
-            if score <= 0:
+            # 最低相关性阈值：低于它的一律丢弃（避免只共享一两个常见字就被当成相关）
+            if score < settings.retrieval_min_score:
                 continue
             scored.append(
                 RetrievedChunk(

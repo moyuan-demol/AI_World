@@ -30,8 +30,17 @@ def offline_chat_answer(
         lines.append("")
         lines.append("配置 API Key 后，模型会基于以上片段组织完整的专业回答。")
     else:
-        lines.append("当前没有任何知识库命中，回答将完全依赖角色设定。")
-        lines.append("配置 API Key 后即可获得真实的模型回答。")
+        lines.append(
+            "我是 "
+            + character_name
+            + ("（" + character_role + "）" if character_role else "")
+            + "，很高兴见到你。"
+        )
+        lines.append(
+            "知识库里没有与这个问题相关的内容（低于相关性阈值的片段不会被列出，"
+            "以免给你不沾边的资料）。"
+        )
+        lines.append("你可以直接问我这个领域的问题；配置 API Key 后我会给出更完整的回答。")
     return "\n".join(lines)
 
 

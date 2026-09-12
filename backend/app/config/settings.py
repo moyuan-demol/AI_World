@@ -141,6 +141,9 @@ class Settings(BaseSettings):
     chunk_size: int = 600
     chunk_overlap: int = 100
     retrieval_top_k: int = 4
+    # 检索最低相关性阈值（实测标定：不相关 <=0.13，相关 >=0.238，故取 0.18）
+    # ⚠️ 该值取决于向量模型：换用外部语义向量服务后应重新标定
+    retrieval_min_score: float = 0.18
     max_context_chars: int = 6000
 
     # ---- Auth ----
