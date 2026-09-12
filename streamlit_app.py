@@ -1051,7 +1051,8 @@ def page_knowledge(user_id: int) -> None:
 
     st.subheader("知识库列表（分级）")
     tree = kb_tree(user_id)
-    folder_ids = {node["item"]["parent_id"] for node in tree}
+    # 防御式取值：模块版本落后（未返回 parent_id）时也不崩
+    folder_ids = {node["item"].get("parent_id") for node in tree}
     for node in tree:
         item = node["item"]
         with st.container(border=True):
