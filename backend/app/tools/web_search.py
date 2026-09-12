@@ -31,6 +31,52 @@ logger = logging.getLogger(__name__)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
+# 检索用的停用词（疑问词/虚词会显著拉低搜索质量）
+_STOPWORDS = (
+    "如何", "怎么", "怎样", "什么", "哪些", "哪个", "是否", "可以", "需要", "应该",
+    "请问", "帮我", "我们", "你们", "他们", "这个", "那个", "以及", "并且", "但是",
+    "根据", "关于", "对于", "如果", "那么", "就是", "还是", "已经", "可能", "问题",
+)
+
+
+def keyword_query(text: str, limit: int = 30) -> str:
+    """把自然语言问题压缩成适合搜索引擎的关键词串。
+
+    踩过的坑：直接把整段问题丢给维基搜索时，会返回"热门条目"这类
+    完全不相关的结果（例如问药品却返回川普词条）。先去掉疑问词与标点、
+    限制长度，搜索结果的相关性会明显改善。
+    """
+    cleaned = text or ""
+    for word in _STOPWORDS:
+        cleaned = cleaned.replace(word, " ")
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff]+", " ", cleaned)
+    tokens = [token for token in cleaned.split() if token.strip()]
+    joined = " ".join(tokens).strip()
+    return (joined or (text or "").strip())[:limit].strip()
+
+
+def _gram_set(text: str) -> set[str]:
+    """中文按字 + 双字，英文按词，构成用于相关性比较的记号集合。"""
+    lowered = (text or "").lower()
+    words = set(re.findall(r"[a-z0-9]{2,}", lowered))
+    cjk = re.findall(r"[\u4e00-\u9fff]", lowered)
+    grams = set(cjk)
+    for index in range(len(cjk) - 1):
+        grams.add(cjk[index] + cjk[index + 1])
+    return words | grams
+
+
+def relevance_score(query: str, result: "SearchResult") -> float:
+    """网页结果与问题的相关性（0~1）：标题+摘要命中问题记号的比例。"""
+    query_grams = _gram_set(query)
+    if not query_grams:
+        return 0.0
+    haystack = _gram_set((result.title or "") + " " + (result.snippet or ""))
+    if not haystack:
+        return 0.0
+    hits = len(query_grams & haystack)
+    return hits / len(query_grams)
+
 
 def strip_html(text: str) -> str:
     return _TAG_RE.sub("", text or "").strip()
@@ -59,6 +105,8 @@ class ProviderReport:
 class SearchOutcome:
     results: list[SearchResult] = field(default_factory=list)
     reports: list[ProviderReport] = field(default_factory=list)
+    # 被相关性过滤丢弃的条数（界面会如实显示）
+    dropped: int = 0
 
     @property
     def used_providers(self) -> list[str]:
@@ -309,12 +357,17 @@ class WebSearchTool:
                 [],
             )
 
-    async def search(self, query: str) -> SearchOutcome:
+    async def search(self, query: str, *, min_relevance: float | None = None) -> SearchOutcome:
         active = [item for item in self.providers if item.configured]
         if not query.strip() or not active:
             return SearchOutcome()
 
-        outcomes = await asyncio.gather(*[self._run_one(item, query) for item in active])
+        # 用关键词而不是整段问题去搜（显著改善相关性）
+        search_query = keyword_query(query)
+        threshold = settings.search_min_relevance if min_relevance is None else min_relevance
+        outcomes = await asyncio.gather(
+            *[self._run_one(item, search_query) for item in active]
+        )
 
         merged: list[SearchResult] = []
         seen: set[str] = set()
@@ -327,4 +380,20 @@ class WebSearchTool:
                     continue
                 seen.add(key)
                 merged.append(item)
-        return SearchOutcome(results=merged[: self.max_results], reports=reports)
+        # 相关性过滤：宁可少给，也不给与问题不沾边的结果
+        kept: list[SearchResult] = []
+        dropped = 0
+        for item in merged:
+            if relevance_score(query, item) >= threshold:
+                kept.append(item)
+            else:
+                dropped += 1
+        if not kept and merged:
+            # 全部被过滤时，保留相关度最高的 1 条，避免"开了联网却什么都没给"
+            best = max(merged, key=lambda item: relevance_score(query, item))
+            kept = [best]
+            dropped = max(0, dropped - 1)
+
+        return SearchOutcome(
+            results=kept[: self.max_results], reports=reports, dropped=dropped
+        )

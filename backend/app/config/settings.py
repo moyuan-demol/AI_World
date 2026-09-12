@@ -122,6 +122,8 @@ class Settings(BaseSettings):
     search_max_results: int = 6
     search_api_key: str = ""
     search_base_url: str = ""
+    # 相关性阈值：低于该值的网页结果会被丢弃（0~1）
+    search_min_relevance: float = 0.12
 
     # ---- 多 Agent RAG（拆解 / 查找 / 审查 / 整理）----
     multi_agent_enabled: bool = True
