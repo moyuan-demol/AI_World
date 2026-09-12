@@ -1,11 +1,12 @@
-"""文档元信息直答：作者 / 页数 / 上传时间 / 文件名 这类问题不走向量检索。
+"""文档元信息识别与组织：作者 / 页数 / 上传时间 / 文件名 这类问题的公共纯函数。
 
-为什么单独处理：
-- "这篇文档的作者是谁""一共有多少页"这类问题的答案不在正文语义里，
-  而在**元数据**里；走向量检索要么检索不到，要么把整篇正文塞进上下文，浪费 token。
-- 这里直接在元数据层面组织回答上下文，既准确又省成本。
+为什么需要它（注意设计已修正）：
+- 早期版本命中这类问句时"只给元数据、跳过向量检索"，结果问"论文作者是谁"
+  只能看到文件名/切片数，而真正的作者行就在被丢弃的正文第一页里 —— 这是缺陷。
+- 现在 ChatService 命中这类问句时**照常检索正文**，只用本模块把文档元数据
+  整理成补充证据（伪切片）附加在正文之后，两者不冲突。
 
-对外提供两个纯函数（便于离线、确定性测试）：
+对外提供纯函数（便于离线、确定性测试）：
 - is_meta_question(text)  -> bool
 - build_meta_context(documents) -> str
 另外提供 build_meta_chunks(documents)，把元信息包装成与 build_context_block
@@ -109,7 +110,7 @@ def build_meta_context(documents) -> str:
     items = list(documents or [])
     if not items:
         return "该用户的知识库中还没有任何文档，无法回答元信息类问题。"
-    lines = ["以下是知识库中匹配文档的元信息（直接依据元数据回答，未做向量检索）："]
+    lines = ["以下是知识库中匹配文档的元信息（作为检索正文的补充证据）："]
     for index, document in enumerate(items, start=1):
         lines.append("[" + str(index) + "] " + describe_document(document))
     return "\n".join(lines)

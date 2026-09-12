@@ -101,6 +101,80 @@ def limit_per_document(chunks: list[RetrievedChunk], max_per_document: int) -> l
     return kept
 
 
+def _chunk_field(document, name: str, default=None):
+    """兼容 ORM 对象与 dict 两种切片表示（纯函数测试用 dict 更省事）。"""
+    if isinstance(document, dict):
+        return document.get(name, default)
+    return getattr(document, name, default)
+
+
+def head_chunks(
+    documents,
+    *,
+    knowledge_ids: list[int] | None = None,
+    per_document: int = 1,
+    limit: int | None = None,
+    exclude_ids: set[int] | None = None,
+) -> list[RetrievedChunk]:
+    """首屏切片优先：每篇文档取 chunk_index 最小的 1~2 块（纯函数，便于离线测试）。
+
+    为什么单独取"头部"：作者 / 单位 / 期刊 / DOI 这类元信息几乎总在正文第一页，
+    但向量与 BM25 更偏好正文中段的语义，第一页常常落不到 Top-K。
+    这里不看检索打分，直接从每篇文档的头部取切片，保证第一页一定进入上下文。
+
+    - knowledge_ids 非空时只处理这些知识库下的文档（与检索边界保持一致）；
+    - per_document 表示每篇文档取几块，按需求收敛到 1~2；
+    - exclude_ids 是"已经进入检索结果"的切片 id，命中的头部切片不再重复添加；
+    - limit 是总数上限：文档很多时，避免无关文档的第一页把上下文挤满。
+    输出顺序沿用传入 documents 的分组首现顺序，调用方可据此控制优先级。
+    """
+    allowed = set(knowledge_ids) if knowledge_ids else None
+    excluded = set(exclude_ids or ())
+    take = max(1, min(2, int(per_document)))
+    cap = None if limit is None else max(0, int(limit))
+    if cap == 0:
+        return []
+
+    grouped: dict[tuple[int, str], list] = {}
+    order: list[tuple[int, str]] = []
+    for document in documents or []:
+        knowledge_id = int(_chunk_field(document, "knowledge_id", 0) or 0)
+        if allowed is not None and knowledge_id not in allowed:
+            continue
+        filename = str(_chunk_field(document, "filename", "") or "")
+        key = (knowledge_id, filename)
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(document)
+
+    results: list[RetrievedChunk] = []
+    for key in order:
+        items = sorted(
+            grouped[key], key=lambda item: int(_chunk_field(item, "chunk_index", 0) or 0)
+        )
+        for document in items[:take]:
+            document_id = _chunk_field(document, "id", None)
+            if document_id is None:
+                document_id = _chunk_field(document, "document_id", None)
+            if document_id is None or int(document_id) in excluded:
+                # 已在检索结果里 -> 不重复添加（同一 document_id 只出现一次）
+                continue
+            results.append(
+                RetrievedChunk(
+                    document_id=int(document_id),
+                    knowledge_id=key[0],
+                    filename=key[1],
+                    chunk_index=int(_chunk_field(document, "chunk_index", 0) or 0),
+                    content=str(_chunk_field(document, "content", "") or ""),
+                    score=0.0,
+                )
+            )
+            if cap is not None and len(results) >= cap:
+                return results
+    return results
+
+
 def cosine_similarity(left: list[float], right: list[float]) -> float:
     if not left or not right or len(left) != len(right):
         return 0.0

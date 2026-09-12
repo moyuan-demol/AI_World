@@ -147,6 +147,10 @@ class Settings(BaseSettings):
     # 同一篇文档（同一文件）在最终结果里最多保留几条：
     # 合并相邻切片后仍可能出现同一文件的多段命中，限制它能保证"多篇文档"都能进入上下文。
     retrieval_max_per_document: int = 2
+    # 元信息问句（作者/单位/期刊/DOI…）额外补入的"首屏切片"：
+    # 这些事实几乎总在正文第一页，必须保证它进入上下文，即使向量/BM25 没把第一页排进 Top-K。
+    retrieval_head_per_document: int = 1  # 每篇文档取 chunk_index 最小的几块（1~2）
+    retrieval_head_chunks: int = 4        # 首屏切片总数上限，避免无关文档的第一页挤占上下文
     max_context_chars: int = 6000
 
     # ---- 普通模式查询改写（需要模型；未配置/失败时自动回退原问题，见 chat_service）----

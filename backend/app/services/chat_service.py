@@ -20,8 +20,7 @@ from app.rag.multi_agent import MultiAgentRag
 from app.rag.query_rewrite import build_rewrite_messages, needs_rewrite, parse_rewritten_queries
 from app.rag.rag_service import RagService
 from app.rag.rerank import rerank
-from app.rag.retriever import RetrievedChunk, cosine_similarity
-from app.rag.meta_query import is_meta_question
+from app.rag.retriever import RetrievedChunk, cosine_similarity, head_chunks
 from app.tools.web_search import WebSearchTool
 from app.repositories.character_repository import CharacterRepository
 from app.repositories.character_knowledge_repository import CharacterKnowledgeRepository
@@ -92,10 +91,11 @@ class ChatService:
         chunks = []
         if payload.use_knowledge:
             if is_meta_question(payload.message):
-                # 元信息类问题（作者/页数/上传时间/文件名…）：跳过向量检索，
-                # 直接用文档元数据组织上下文，既准确又省 token
+                # 元信息类问题（作者/页数/上传时间/文件名…）：
+                # 作者行/单位/期刊就写在正文第一页，绝不能"只给元数据、跳过检索"；
+                # 因此照常检索正文，再补首屏切片与文档元信息（见 _meta_context）。
                 context_block, chunks = await self._meta_context(
-                    user_id, payload.knowledge_id, scoped_ids
+                    user_id, payload.message, payload.knowledge_id, scoped_ids
                 )
             else:
                 # 普通模式：可选的查询改写（需要模型，失败自动降级）+ 多路 RRF 融合 + 精排
@@ -317,16 +317,85 @@ class ChatService:
     async def _meta_context(
         self,
         user_id: int,
+        question: str,
         knowledge_id: int | None,
         scoped_ids: list[int],
     ) -> tuple[str, list[RetrievedChunk]]:
-        """元信息直答：用文档元数据组织上下文，不走向量检索。"""
-        documents = await self._meta_documents(user_id, knowledge_id, scoped_ids)
-        chunks = build_meta_chunks(documents)
+        """元信息类问题：检索正文为主证据 + 首屏切片 + 文档元信息为补充证据。
+
+        为什么不能只给元数据：作者/单位/期刊/DOI 这类事实写在**正文第一页**，
+        只给"文件名/上传时间/切片数"会让模型回答"无法确认"。
+        因此这里照常走知识库检索链路（向量 + BM25 + 合并 + 多样性 + Rerank），再补两样：
+        1) 首屏切片：向量/BM25 可能没把第一页排进 Top-K，这里从每篇文档头部兜底取回；
+        2) 文档元信息：伪切片（document_id 为负数），追加在正文之后，不与正文切片冲突。
+        """
+        scope = await self._scope_knowledge_ids(user_id, knowledge_id, scoped_ids)
+        if not scope:
+            # 没有任何可见知识库：与旧行为一致，返回空上下文
+            return "", []
+
+        # 1) 正文检索：完整复用普通模式的现有链路，检索结果作为主证据
+        _unused_context, retrieved = await self._knowledge_context(
+            user_id, question, knowledge_id, scoped_ids
+        )
+
+        # 2) 首屏切片：每篇文档 chunk_index 最小的 1 块；已出现在检索结果里的不重复添加。
+        #    排序让"检索已判定相关"的文档优先，其余按最近上传优先，
+        #    避免无关文档的第一页反过来挤占上下文。
+        documents = await DocumentRepository(self.session).list_by_knowledge_ids(scope)
+        retrieved_rank = {
+            (chunk.knowledge_id, chunk.filename): index
+            for index, chunk in enumerate(retrieved)
+        }
+        documents.sort(
+            key=lambda document: (
+                0 if (document.knowledge_id, document.filename) in retrieved_rank else 1,
+                retrieved_rank.get((document.knowledge_id, document.filename), 0),
+                -(document.id or 0),
+            )
+        )
+        heads = head_chunks(
+            documents,
+            knowledge_ids=scope,
+            per_document=settings.retrieval_head_per_document,
+            limit=settings.retrieval_head_chunks,
+            exclude_ids={chunk.document_id for chunk in retrieved},
+        )
+
+        # 3) 文档元信息作为补充证据，按需求追加在正文切片之后
+        meta_chunks = build_meta_chunks(
+            await self._meta_documents(user_id, knowledge_id, scoped_ids)
+        )
+
+        chunks = list(retrieved) + list(heads) + list(meta_chunks)
         context = build_context_block(chunks)
         if len(context) > settings.max_context_chars:
             context = context[: settings.max_context_chars]
         return context, chunks
+
+    async def _scope_knowledge_ids(
+        self,
+        user_id: int,
+        knowledge_id: int | None,
+        scoped_ids: list[int],
+    ) -> list[int]:
+        """解析"知识边界"：显式单库 > 角色绑定 > 该用户全部（与 Retriever 完全一致）。
+
+        元信息问句与正文检索必须用同一套边界，否则会出现
+        "检索到了某篇文档、元信息里却没有它"的错位。
+        """
+        knowledge_repo = KnowledgeRepository(self.session)
+        bases = await knowledge_repo.list_by_user(user_id)
+        owned = {base.id for base in bases}
+        if knowledge_id is not None:
+            if knowledge_id not in owned:
+                return []
+            return await knowledge_repo.list_descendant_ids(user_id, [knowledge_id])
+        if scoped_ids:
+            return await knowledge_repo.list_descendant_ids(
+                user_id, [item for item in scoped_ids if item in owned]
+            )
+        return [base.id for base in bases]
 
     async def _meta_documents(
         self,
@@ -335,19 +404,7 @@ class ChatService:
         scoped_ids: list[int],
     ) -> list[dict]:
         """按与检索一致的"知识边界"收集文档元数据（同一文件聚合为一条）。"""
-        knowledge_repo = KnowledgeRepository(self.session)
-        bases = await knowledge_repo.list_by_user(user_id)
-        owned = {base.id for base in bases}
-        if knowledge_id is not None:
-            if knowledge_id not in owned:
-                return []
-            scope = await knowledge_repo.list_descendant_ids(user_id, [knowledge_id])
-        elif scoped_ids:
-            scope = await knowledge_repo.list_descendant_ids(
-                user_id, [item for item in scoped_ids if item in owned]
-            )
-        else:
-            scope = [base.id for base in bases]
+        scope = await self._scope_knowledge_ids(user_id, knowledge_id, scoped_ids)
         if not scope:
             return []
 
