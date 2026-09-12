@@ -126,6 +126,7 @@ from app.schemas.chat import ChatRequest  # noqa: E402
 from app.schemas.character import CharacterCreate  # noqa: E402
 from app.schemas.knowledge import KnowledgeCreate, KnowledgeOut  # noqa: E402
 from app.schemas.roundtable import AgentSpec, RoundtableRequest  # noqa: E402
+from app.schemas.user import UserCreate, UserLogin  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402
 from app.services.character_service import CharacterService  # noqa: E402
 from app.services.chat_service import ChatService  # noqa: E402
@@ -172,20 +173,10 @@ def db_call(handler):
 
 
 @st.cache_resource(show_spinner="正在初始化 AI World ...")
-def bootstrap() -> dict:
-    """建表 + 准备演示账号 + 预置 3 个 AI 伙伴（幂等）。"""
+def bootstrap() -> bool:
+    """建表 + 确保公共体验账号存在（幂等）。当前用户由登录态决定，不再自动登录。"""
     run_async(init_db())
-
-    async def handler(session):
-        repo = UserRepository(session)
-        user = await repo.get_by_username(settings.demo_username)
-        if user is None:
-            token, _created = await AuthService(session).demo_login()
-            user = await repo.get(token.user.id)
-        await CharacterService(session).ensure_defaults(user.id)
-        return {"user_id": user.id, "username": user.username}
-
-    return db_call(handler)
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -201,6 +192,92 @@ def _character_dict(row) -> dict:
         "speaking_style": row.speaking_style,
         "system_prompt": row.system_prompt,
     }
+
+
+def _session_from_token(token) -> dict:
+    return {"uid": token.user.id, "uname": token.user.username}
+
+
+def api_register(username: str, password: str, email: str | None) -> dict:
+    async def handler(session):
+        token = await AuthService(session).register(
+            UserCreate(username=username, password=password, email=email)
+        )
+        await CharacterService(session).ensure_defaults(token.user.id)
+        return _session_from_token(token)
+
+    return db_call(handler)
+
+
+def api_login(username: str, password: str) -> dict:
+    async def handler(session):
+        token = await AuthService(session).login(UserLogin(username=username, password=password))
+        return _session_from_token(token)
+
+    return db_call(handler)
+
+
+def api_demo_login() -> dict:
+    async def handler(session):
+        token, _created = await AuthService(session).demo_login()
+        await CharacterService(session).ensure_defaults(token.user.id)
+        return _session_from_token(token)
+
+    return db_call(handler)
+
+
+def login_gate() -> int | None:
+    """返回当前登录用户 id；未登录则渲染登录/注册界面并返回 None。
+
+    改造原因：原来所有人自动以 demo 账号进入 → 共用同一份数据，
+    任何人都能删改别人的内容。现在每个访客注册自己的账号，数据完全隔离。
+    """
+    uid = st.session_state.get("uid")
+    if uid:
+        return int(uid)
+
+    st.title("🌍 AI World")
+    st.caption("AI 世界 · 你的个人 AI 智能空间。**每个账号的数据完全隔离**，别人看不到也改不了。")
+
+    tab_login, tab_register = st.tabs(["登录", "注册新账号"])
+    with tab_login:
+        with st.form("login_form"):
+            name = st.text_input("用户名", key="login_name")
+            password = st.text_input("密码", type="password", key="login_pwd")
+            submitted = st.form_submit_button("登录", type="primary")
+        if submitted:
+            if not name.strip() or not password:
+                st.error("请输入用户名和密码")
+            else:
+                try:
+                    st.session_state.update(**api_login(name.strip(), password))
+                    st.rerun()
+                except Exception as exc:  # noqa: BLE001
+                    st.error(redact_credentials(type(exc).__name__ + ": " + str(exc)))
+    with tab_register:
+        with st.form("register_form"):
+            new_name = st.text_input("用户名（至少 2 位）", key="reg_name")
+            new_pwd = st.text_input("密码（至少 6 位）", type="password", key="reg_pwd")
+            new_email = st.text_input("邮箱（可选）", key="reg_email")
+            submitted_new = st.form_submit_button("注册并进入", type="primary")
+        if submitted_new:
+            if len(new_name.strip()) < 2 or len(new_pwd) < 6:
+                st.error("用户名至少 2 位、密码至少 6 位")
+            else:
+                try:
+                    st.session_state.update(
+                        **api_register(new_name.strip(), new_pwd, new_email.strip() or None)
+                    )
+                    st.rerun()
+                except Exception as exc:  # noqa: BLE001
+                    st.error(redact_credentials(type(exc).__name__ + ": " + str(exc)))
+
+    st.divider()
+    st.caption("⚠️ 下面是**公共体验账号**：所有人共用同一份数据，任何人都能删改里面的内容，请勿存放重要资料。")
+    if st.button("🎮 一键体验 Demo（公共沙盒）"):
+        st.session_state.update(**api_demo_login())
+        st.rerun()
+    return None
 
 
 def invalidate_lists() -> None:
@@ -1398,16 +1475,19 @@ def render_startup_failure(exc: Exception) -> None:
 def main() -> None:
     password_gate()
     try:
-        context = bootstrap()
-        user_id = context["user_id"]
-        # 自愈：演示数据被删空时自动恢复预置角色
-        if api_ensure_default_characters(user_id) > 0:
-            st.toast("检测到演示数据被清空，已自动恢复初始角色", icon="♻️")
+        bootstrap()
+        user_id = login_gate()
     except Exception as exc:  # noqa: BLE001
         render_startup_failure(exc)
         return
+    if user_id is None:
+        return
 
-    page = sidebar(user_id, context["username"])
+    # 自愈：该账号预置角色缺失时自动补齐
+    if api_ensure_default_characters(user_id) > 0:
+        st.toast("检测到预置角色缺失，已自动补齐", icon="♻️")
+
+    page = sidebar(user_id, st.session_state.get("uname", "用户"))
 
     if page == "我的世界":
         page_dashboard(user_id)

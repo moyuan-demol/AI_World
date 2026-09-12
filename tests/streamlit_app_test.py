@@ -44,7 +44,13 @@ def main() -> int:
     print("\n== 1. 首次渲染（建表 + 演示账号 + 预置伙伴）==")
     at = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=300)
     at.run()
-    check("首页渲染", at)
+    check("未登录时显示登录页", at)
+
+    # 现在需要登录才能进入（模拟公共体验账号：临时库里 demo 用户 id=1）
+    at.session_state["uid"] = 1
+    at.session_state["uname"] = "demo"
+    at.run()
+    check("登录后首页渲染", at)
 
     print("\n== 2. 各页面渲染 ==")
     for page in PAGES:
