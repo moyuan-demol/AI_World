@@ -20,6 +20,7 @@ from app.rag.multi_agent import MultiAgentRag
 from app.rag.query_rewrite import build_rewrite_messages, needs_rewrite, parse_rewritten_queries
 from app.rag.rag_service import RagService
 from app.rag.rerank import rerank
+from app.rag.self_intro import is_self_intro_question
 from app.rag.retriever import (
     RetrievedChunk,
     cosine_similarity,
@@ -56,6 +57,20 @@ def parse_memory_items(text: str) -> list[dict]:
     if not isinstance(data, list):
         return []
     return [item for item in data if isinstance(item, dict)]
+
+
+def _limited_context_block(chunks: list[RetrievedChunk]) -> str:
+    """把片段渲染成上下文块并按 max_context_chars 截断；空片段返回空串。
+
+    单独抽出来是为了让"对话性问题被高门槛筛空"时得到真正的空上下文，
+    而不是留下一个只有表头的伪上下文（那同样会误导模型）。
+    """
+    if not chunks:
+        return ""
+    context = build_context_block(chunks)
+    if len(context) > settings.max_context_chars:
+        context = context[: settings.max_context_chars]
+    return context
 
 
 class ChatService:
@@ -107,6 +122,21 @@ class ChatService:
                 context_block, chunks = await self._knowledge_context(
                     user_id, payload.message, payload.knowledge_id, scoped_ids
                 )
+
+            # 对话性/寒暄问题（你是谁、你是做什么的、介绍一下你自己…）再上一道更高的
+            # 相关性门槛：这类问句几乎不含专业实词，与任何知识文档都只共享"是/什/么"
+            # 这类常见字，很容易靠 0.18 的通用阈值挤进上下文，让"角色自我介绍"变成
+            # "列出几条无关片段"（用户实测的假命中）。
+            # 用 settings.self_intro_min_score（默认 0.30）重筛：
+            #   - 有片段达标 -> 正常纳入（例如用户刚问过相关知识）；
+            #   - 一条都不达标 -> 不带任何知识库片段，交给离线兜底/模型输出自我介绍。
+            if is_self_intro_question(payload.message):
+                chunks = [
+                    chunk
+                    for chunk in chunks
+                    if float(getattr(chunk, "score", 0.0) or 0.0) >= settings.self_intro_min_score
+                ]
+                context_block = _limited_context_block(chunks)
 
         # 外部世界接口：把网页资料并入上下文（失败会自动降级，不阻塞回答）
         web_chunks, web_reports = await self._fetch_web(payload.message, payload.use_web)

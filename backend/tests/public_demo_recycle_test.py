@@ -23,6 +23,7 @@ import os
 import sys
 import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 
 # 数据安全：独立临时数据库 + 独立上传目录，绝不触碰真实 data/database.db。
@@ -49,6 +50,7 @@ from app.schemas.chat import ChatRequest  # noqa: E402
 from app.schemas.knowledge import KnowledgeCreate  # noqa: E402
 from app.services.character_service import CharacterService  # noqa: E402
 from app.services.chat_service import ChatService  # noqa: E402
+import app.services.demo_seed as demo_seed  # noqa: E402
 from app.services.demo_seed import (  # noqa: E402
     PUBLIC_DOC_FILENAME,
     PUBLIC_DOC_STORED_FILENAME,
@@ -170,6 +172,153 @@ def section_one(ctx: dict) -> None:
         PUBLIC_DOC_FILENAME == "AI 世界 · 使用手册与检索测试题.md"
         and PUBLIC_DOC_STORED_FILENAME.endswith(".md"),
         PUBLIC_DOC_FILENAME + " -> " + PUBLIC_DOC_STORED_FILENAME,
+    )
+    check(
+        "公共手册切片数明显增加（>= 8 条）",
+        len(chunks) >= 8,
+        "切片数=" + str(len(chunks)),
+    )
+    check(
+        "至少一条切片包含事实点 RRF",
+        any("RRF" in chunk.content for chunk in chunks),
+        str([chunk.content[:40] for chunk in chunks]),
+    )
+    check(
+        "手册正文明显扩写（>= 2500 字）",
+        sum(len(chunk.content) for chunk in chunks) >= 2500,
+        "总字数=" + str(sum(len(chunk.content) for chunk in chunks)),
+    )
+
+
+def section_version(ctx: dict) -> None:
+    print("\n== 1b. 版本机制：PUBLIC_DOC_VERSION 变化会替换切片，且仍幂等 ==")
+
+    async def handler(session):
+        documents = DocumentRepository(session)
+        before = await documents.list_by_knowledge(ctx["public_kb"])
+        before_ids = {chunk.id for chunk in before}
+        before_contents = {chunk.content for chunk in before}
+        original_version = demo_seed.PUBLIC_DOC_VERSION
+        original_fingerprint = demo_seed.public_doc_fingerprint()
+        try:
+            demo_seed.PUBLIC_DOC_VERSION = original_version + 1
+            bumped_fingerprint = demo_seed.public_doc_fingerprint()
+            bumped = await ensure_public_demo(session)
+            after = await documents.list_by_knowledge(ctx["public_kb"])
+            after_ids = {chunk.id for chunk in after}
+            after_contents = {chunk.content for chunk in after}
+            again = await ensure_public_demo(session)
+            again_ids = {
+                chunk.id for chunk in await documents.list_by_knowledge(ctx["public_kb"])
+            }
+        finally:
+            # 还原版本号，并把库重建回"当前最新版本"，避免影响后续小节
+            demo_seed.PUBLIC_DOC_VERSION = original_version
+            restored = await ensure_public_demo(session)
+            restored_chunks = await documents.list_by_knowledge(ctx["public_kb"])
+        return {
+            "before_ids": before_ids,
+            "after_ids": after_ids,
+            "again_ids": again_ids,
+            "before_contents": before_contents,
+            "after_contents": after_contents,
+            "original_fingerprint": original_fingerprint,
+            "bumped_fingerprint": bumped_fingerprint,
+            "bumped": bumped,
+            "again": again,
+            "restored": restored,
+            "restored_count": len(restored_chunks),
+            "before_count": len(before),
+        }
+
+    result = db_call(handler)
+    check(
+        "版本变化后会重新切片入库（created_document=True）",
+        result["bumped"]["created_document"] is True,
+        str(result["bumped"]),
+    )
+    check(
+        "版本变化被标记为替换（replaced_document=True）",
+        result["bumped"]["replaced_document"] is True,
+        str(result["bumped"]),
+    )
+    # 注意：SQLite 没有 AUTOINCREMENT 时，删空后再插入会复用 rowid，
+    # 因此不能用"切片 id 不同"判断替换；用"版本指纹是否换掉"才是可靠证据。
+    check(
+        "旧版本内容被替换（切片正文集合发生变化）",
+        result["before_contents"] != result["after_contents"],
+        str(list(result["after_contents"])[:1])[:120],
+    )
+    check(
+        "旧版本指纹已从切片中消失",
+        not any(result["original_fingerprint"] in item for item in result["after_contents"]),
+        result["original_fingerprint"],
+    )
+    check(
+        "新版本指纹已写入切片",
+        any(result["bumped_fingerprint"] in item for item in result["after_contents"]),
+        result["bumped_fingerprint"],
+    )
+    check(
+        "替换后切片数不累积（与替换前一致且 >= 8）",
+        len(result["after_ids"]) == result["before_count"] and len(result["after_ids"]) >= 8,
+        "before=" + str(result["before_count"]) + " after=" + str(len(result["after_ids"])),
+    )
+    check(
+        "同一版本连续调用两次仍幂等（第二次不重复插入）",
+        result["again"]["created_document"] is False,
+        str(result["again"]),
+    )
+    check(
+        "幂等调用不改变切片集合",
+        result["again_ids"] == result["after_ids"],
+        str((result["again_ids"], result["after_ids"])),
+    )
+    check(
+        "还原版本号后会重建为当前版本（>= 8 条切片）",
+        result["restored"]["replaced_document"] is True and result["restored_count"] >= 8,
+        str(result["restored"])[:200],
+    )
+
+
+def section_recycled_doc(ctx: dict) -> None:
+    print("\n== 1c. 回收站中的公共文档：跳过而不是复活 ==")
+
+    async def handler(session):
+        documents = DocumentRepository(session)
+        # 只把"文档切片"软删除，知识库本身仍然活着 —— 模拟文档级回收站场景
+        await documents.soft_delete_by_knowledge_ids([ctx["public_kb"]], datetime.utcnow())
+        await session.commit()
+        skipped = await ensure_public_demo(session)
+        still_deleted = await documents.list_deleted_by_knowledge_ids([ctx["public_kb"]])
+        active_after_skip = await documents.list_by_knowledge(ctx["public_kb"])
+        # 模拟站长在回收站恢复整篇文档，再让种子逻辑处理一次
+        await documents.restore_by_knowledge_ids([ctx["public_kb"]])
+        await session.commit()
+        restored = await ensure_public_demo(session)
+        active_after_restore = await documents.list_by_knowledge(ctx["public_kb"])
+        return skipped, still_deleted, active_after_skip, restored, active_after_restore
+
+    skipped, still_deleted, active_after_skip, restored, active_after_restore = db_call(handler)
+    check(
+        "文档在回收站时跳过（skipped_reason=document_recycled）",
+        skipped["skipped_reason"] == "document_recycled" and skipped["created_document"] is False,
+        str(skipped),
+    )
+    check(
+        "跳过时不复活切片（切片仍留在回收站）",
+        active_after_skip == [] and len(still_deleted) >= 8,
+        "active=" + str(len(active_after_skip)) + " deleted=" + str(len(still_deleted)),
+    )
+    check(
+        "恢复后指纹一致则幂等跳过、不重复插入",
+        restored["created_document"] is False and restored["skipped_reason"] is None,
+        str(restored),
+    )
+    check(
+        "恢复后可重新读到公共手册切片",
+        len(active_after_restore) >= 8,
+        "active=" + str(len(active_after_restore)),
     )
 
 
@@ -502,6 +651,8 @@ def run() -> int:
     )
 
     section_one(ctx)
+    section_version(ctx)
+    section_recycled_doc(ctx)
     section_two(ctx)
     section_three(ctx)
     section_four(ctx)

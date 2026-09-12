@@ -1290,15 +1290,12 @@ def page_knowledge(user_id: int) -> None:
     public_bases = api_list_public_knowledge()
     if public_bases:
         st.subheader("🌍 公共示例库（所有人可查）")
-        st.caption(
-            "站长维护的公共资料，任何账号的检索都会自动包含它。"
-            "普通用户可以把它「移入回收站」（可恢复），**彻底删除只有站长可以执行**。"
-        )
+        # 用户明确要求：删除该区块的两处说明文案（顶部说明 + 公共库描述），
+        # 因此这里不再调用任何 st.caption —— 尤其不能留下空的 st.caption（会渲染成空行）。
         for item in public_bases:
             with st.container(border=True):
                 col1, col2, col3 = st.columns([4, 1, 1])
                 col1.markdown("#### 🌍 " + item["name"])
-                col1.caption(item["description"] or "公共知识库")
                 col2.metric("切片", item["document_count"])
                 if col3.button("移入回收站", key="del_public_kb_" + str(item["id"])):
                     try:

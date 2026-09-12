@@ -56,6 +56,23 @@ class DocumentRepository(BaseRepository[Document]):
         )
         return int(result.scalar_one()) > 0
 
+    async def list_by_file(
+        self, knowledge_id: int, filename: str, *, include_deleted: bool = False
+    ) -> list[Document]:
+        """按 (知识库, 文件名) 取回整篇文档的全部切片（可含回收站）。
+
+        公共示例库的"版本化替换"需要同时看到活着的切片（判断版本指纹）和
+        回收站里的切片（判断该文档是否被有意删除），因此把两种视角合并成一个方法，
+        避免调用方各自拼查询条件。
+        """
+        conditions = [Document.knowledge_id == knowledge_id, Document.filename == filename]
+        if not include_deleted:
+            conditions.append(self._active())
+        result = await self.session.execute(
+            select(Document).where(*conditions).order_by(Document.chunk_index.asc())
+        )
+        return list(result.scalars().all())
+
     async def count_by_knowledge_ids(self, knowledge_ids: list[int]) -> int:
         if not knowledge_ids:
             return 0
