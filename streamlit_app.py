@@ -1262,7 +1262,9 @@ def page_chat(user_id: int) -> None:
                     )
             if result:
                 # 角色视角标注：明确是谁、以什么身份/风格在回答
-                speaker = active_character or {}
+                speaker = next(
+                    (item for item in characters if str(item["id"]) == str(character_id)), {}
+                )
                 viewpoint = (
                     "🎭 由「"
                     + str(speaker.get("name", ""))
