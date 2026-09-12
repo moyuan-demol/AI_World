@@ -92,9 +92,10 @@ async def seed(session) -> dict:
     market = await knowledge.create(user_id=user_id, name="市场资料库", description="")
     await session.commit()
 
+    # 内容必须与提问真正相关，否则会被"最低相关性阈值"正确过滤掉
     texts = {
-        medical.id: "心肌梗死的早期识别与溶栓治疗规范，胸痛患者需尽快完成心电图检查。",
-        market.id: "医疗人工智能市场规模预计持续增长，商业模式以订阅制与项目制为主。",
+        medical.id: "医疗人工智能在临床的应用包括影像辅助诊断、临床决策支持与病历质控，医生需关注合规。",
+        market.id: "医疗人工智能市场规模持续增长，商业模式以订阅制与项目制为主，市场前景广阔。",
     }
     for knowledge_id, content in texts.items():
         vector = (await embed_texts([content]))[0]
@@ -169,10 +170,10 @@ def run() -> int:
     _, doctor_prompt = ask(ctx["doctor"])
     _, advisor_prompt = ask(ctx["advisor"])
 
-    check("医生只看到医疗库内容", "心肌梗死" in doctor_prompt, doctor_prompt[:120])
+    check("医生只看到医疗库内容", "病历质控" in doctor_prompt, doctor_prompt[:120])
     check("医生看不到市场库内容", "商业模式" not in doctor_prompt, doctor_prompt[:120])
     check("顾问只看到市场库内容", "商业模式" in advisor_prompt, advisor_prompt[:120])
-    check("顾问看不到医疗库内容", "心肌梗死" not in advisor_prompt, advisor_prompt[:120])
+    check("顾问看不到医疗库内容", "病历质控" not in advisor_prompt, advisor_prompt[:120])
 
     print("\n== 3. 越权绑定会被过滤（只能绑定自己的库）==")
     async def bind_someone_elses(session):
@@ -190,7 +191,11 @@ def run() -> int:
 
     db_call(unbind)
     _, prompt_all = ask(ctx["doctor"])
-    check("取消绑定后能检索到全部知识库", "心肌梗死" in prompt_all and "商业模式" in prompt_all, prompt_all[:120])
+    check(
+        "取消绑定后能检索到全部知识库",
+        "病历质控" in prompt_all and "商业模式" in prompt_all,
+        prompt_all[:120],
+    )
 
     print("\n== 5. 删除角色会清理绑定 ==")
 
