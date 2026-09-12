@@ -12,12 +12,15 @@
 
 import asyncio
 import os
+import re
 import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
 from uuid import uuid4
+
+from sqlalchemy import inspect, text
 
 import streamlit as st
 
@@ -65,6 +68,43 @@ def _pick_writable_data_dir() -> Path:
         fallback = Path(tempfile.gettempdir()) / "ai_world_data"
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
+
+
+_CREDENTIALS_RE = re.compile(r"://[^:/@\s]+:[^@/\s]+@")
+
+
+def redact_credentials(text: str) -> str:
+    """把错误信息里可能出现的 账号:密码@ 打码，保证可以安全显示在页面上。"""
+    return _CREDENTIALS_RE.sub("://***:***@", str(text))[:400]
+
+
+def api_database_health() -> dict:
+    """数据库自检：能否连通、有哪些表、数据量、失败原因（凭据自动打码）。"""
+
+    async def handler(session):
+        await session.execute(text("SELECT 1"))
+
+        def _tables(sync_conn):
+            return sorted(inspect(sync_conn).get_table_names())
+
+        tables = await session.run_sync(_tables)
+        characters = await session.scalar(text("SELECT count(*) FROM characters"))
+        users = await session.scalar(text("SELECT count(*) FROM users"))
+        return {
+            "tables": tables,
+            "characters": int(characters or 0),
+            "users": int(users or 0),
+        }
+
+    backend = "PostgreSQL" if not settings.is_sqlite else "SQLite"
+    try:
+        return {"ok": True, "backend": backend, **db_call(handler)}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "backend": backend,
+            "error": redact_credentials(type(exc).__name__ + ": " + str(exc)),
+        }
 
 
 SECRETS_REPORT: dict = _load_streamlit_secrets_into_env()
@@ -556,6 +596,24 @@ def sidebar(user_id: int, username: str) -> str:
             st.caption("已读取的 Secrets：" + (loaded or "（空）"))
             if "DATABASE_URL" not in (SECRETS_REPORT.get("keys") or []):
                 st.caption("未发现 DATABASE_URL —— 请确认 Secrets 里是「DATABASE_URL = 连接串」这种键值格式")
+
+        with st.expander("🔧 数据库自检"):
+            st.caption(
+                "配置排查用：点了会真的去连一次数据库，显示能否连通、有哪些表、数据量；"
+                "失败时给出**不涂黑**的真实原因（连接串里的账号密码会自动打码）。"
+            )
+            if st.button("测试数据库连接", key="db_health_button"):
+                health = api_database_health()
+                if health.get("ok"):
+                    st.success("连接正常 · " + str(health.get("backend")))
+                    st.write("表：" + ", ".join(health.get("tables") or []))
+                    st.write(
+                        "用户数：" + str(health.get("users"))
+                        + " · AI 伙伴数：" + str(health.get("characters"))
+                    )
+                else:
+                    st.error("连接失败 · " + str(health.get("backend")))
+                    st.code(str(health.get("error", "未知错误")))
 
         with st.expander("🧠 使用我自己的向量服务（可选，提升检索质量）"):
             st.caption(
@@ -1050,14 +1108,39 @@ def page_usage(user_id: int) -> None:
 # --------------------------------------------------------------------------- #
 # 5. 主流程
 # --------------------------------------------------------------------------- #
+def render_startup_failure(exc: Exception) -> None:
+    """数据库连不上时给出明确指引（Streamlit 默认会把错误正文涂黑，无法排查）。"""
+    st.title("⚠️ 数据库连接失败")
+    st.error(redact_credentials(type(exc).__name__ + ": " + str(exc))[:600])
+    st.markdown(
+        "**常见原因与处理**\n\n"
+        "1. **刚在 Neon 重置过密码**：旧密码立即失效。请复制新的连接串，"
+        "更新到 Secrets（务必保持「DATABASE_URL = 英文双引号包裹连接串」这种键值格式），"
+        "然后点「Reboot app」。\n"
+        "2. **Secrets 提示 Invalid format**：TOML 不合法，整份 Secrets 都会读不到 —— "
+        "检查是否缺了「DATABASE_URL = 」前缀、引号是否英文半角、是否残留旧行。\n"
+        "3. **想先恢复可用**：把 DATABASE_URL 那一行删掉 → Save changes → Reboot app，"
+        "应用会回到本地 SQLite（功能照常）。\n"
+    )
+    st.caption(
+        "当前配置的数据库类型："
+        + ("PostgreSQL" if not settings.is_sqlite else "SQLite")
+        + "｜已读取的 Secrets："
+        + (", ".join(SECRETS_REPORT.get("keys") or []) or "（无）")
+    )
+
+
 def main() -> None:
     password_gate()
-    context = bootstrap()
-    user_id = context["user_id"]
-
-    # 自愈：演示数据被删空时自动恢复预置角色
-    if api_ensure_default_characters(user_id) > 0:
-        st.toast("检测到演示数据被清空，已自动恢复初始角色", icon="♻️")
+    try:
+        context = bootstrap()
+        user_id = context["user_id"]
+        # 自愈：演示数据被删空时自动恢复预置角色
+        if api_ensure_default_characters(user_id) > 0:
+            st.toast("检测到演示数据被清空，已自动恢复初始角色", icon="♻️")
+    except Exception as exc:  # noqa: BLE001
+        render_startup_failure(exc)
+        return
 
     page = sidebar(user_id, context["username"])
 
