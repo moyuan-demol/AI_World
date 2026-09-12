@@ -122,7 +122,7 @@ from app.database.session import SessionLocal  # noqa: E402
 from app.repositories.user_repository import UserRepository  # noqa: E402
 from app.schemas.chat import ChatRequest  # noqa: E402
 from app.schemas.character import CharacterCreate  # noqa: E402
-from app.schemas.knowledge import KnowledgeCreate  # noqa: E402
+from app.schemas.knowledge import KnowledgeCreate, KnowledgeOut  # noqa: E402
 from app.schemas.roundtable import AgentSpec, RoundtableRequest  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402
 from app.services.character_service import CharacterService  # noqa: E402
@@ -536,6 +536,28 @@ def session_embedding_config() -> EmbeddingConfig | None:
     return EmbeddingConfig(provider="openai", api_base=base, api_key=key, model=model)
 
 
+def module_staleness() -> list[str]:
+    """检测「新脚本 + 旧模块」——Streamlit 只重跑脚本、不重载已导入模块。
+
+    这是本项目反复踩到的坑（事件循环 / AttributeError / KeyError 都源于此）。
+    用"能力探测"判断，不需要维护版本号。
+    """
+    missing: list[str] = []
+    for name in (
+        "search_provider_list",
+        "multi_agent_enabled",
+        "memory_inject_limit",
+        "backup_enabled",
+        "admin_username_list",
+        "history_retrieval_enabled",
+    ):
+        if not hasattr(settings, name):
+            missing.append("settings." + name)
+    if "parent_id" not in KnowledgeOut.model_fields:
+        missing.append("KnowledgeOut.parent_id")
+    return missing
+
+
 def default_search_providers() -> list[str]:
     """防御式读取默认来源：即使云端模块与脚本版本不一致也不会崩。"""
     raw = getattr(settings, "search_providers", "") or "wikipedia"
@@ -631,6 +653,14 @@ def sidebar(user_id: int, username: str) -> str:
         st.caption("个人/企业级 AI 智能空间")
         page = st.radio("导航", nav_items(), label_visibility="collapsed")
         st.divider()
+
+        stale = module_staleness()
+        if stale:
+            st.error("⚠️ 检测到云端模块版本落后（" + "、".join(stale[:3]) + " 等）")
+            st.caption(
+                "这是 Streamlit「只重跑脚本、不重载模块」导致的："
+                "请点右下角 Manage app → Reboot app 重启应用即可，属于正常操作。"
+            )
 
         st.markdown("**运行状态**")
         using_own_key = bool((st.session_state.get("ai_key") or "").strip())
