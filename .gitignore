@@ -25,6 +25,7 @@ backend/.env
 # ---- Data / runtime ----
 data/*.db
 data/*.db-journal
+data/backups/
 data/uploads/
 *.log
 

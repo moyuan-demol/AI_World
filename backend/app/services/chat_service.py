@@ -14,12 +14,13 @@ from app.config.settings import settings
 from app.core.errors import NotFoundError
 from app.models.chat import Conversation, Message
 from app.rag.embedding import EmbeddingConfig, embed_query
+from app.rag.multi_agent import MultiAgentRag
 from app.rag.rag_service import RagService
 from app.rag.retriever import cosine_similarity
 from app.repositories.character_repository import CharacterRepository
 from app.repositories.chat_repository import ConversationRepository, MessageRepository
 from app.repositories.memory_repository import MemoryRepository
-from app.schemas.chat import ChatRequest, ChatResponse, SourceOut
+from app.schemas.chat import AgentStepOut, ChatRequest, ChatResponse, SourceOut
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,10 @@ class ChatService:
             raise NotFoundError("AI 伙伴不存在或无权访问")
 
         conversation = await self._resolve_conversation(user_id, payload, character.name)
+
+        # 多 Agent 协作模式：与单轮模式完全隔离，不改变原有行为
+        if payload.rag_mode == "multi" and settings.multi_agent_enabled:
+            return await self._chat_with_agents(user_id, payload, character, conversation)
 
         context_block = ""
         chunks = []
@@ -181,6 +186,90 @@ class ChatService:
         for memory in memories:
             lines.append("- [" + memory.memory_type + "] " + memory.content)
         return "\n".join(lines)
+
+    async def _chat_with_agents(
+        self,
+        user_id: int,
+        payload: ChatRequest,
+        character,
+        conversation: Conversation,
+    ) -> ChatResponse:
+        """多 Agent RAG：拆解 → 查找 → 审查（有界补检）→ 整理。"""
+        system_prompt = build_character_system_prompt(character)
+        memory_block = await self._memory_block(user_id, character.id)
+        if memory_block:
+            system_prompt = system_prompt + "\n\n" + memory_block
+        summary = await self._refresh_summary(conversation, user_id)
+        if summary:
+            system_prompt = system_prompt + "\n\n[此前对话摘要]\n" + summary
+
+        async def retrieve(query: str):
+            if not payload.use_knowledge:
+                return []
+            return await self.rag.retrieve(
+                user_id=user_id,
+                query=query,
+                knowledge_id=payload.knowledge_id,
+                top_k=settings.multi_agent_top_k,
+            )
+
+        pipeline = MultiAgentRag(
+            self.ai,
+            retrieve,
+            system_prompt=system_prompt,
+            max_rounds=settings.multi_agent_max_rounds,
+        )
+        result = await pipeline.run(payload.message)
+
+        sources = [
+            SourceOut(
+                document_id=chunk.document_id,
+                knowledge_id=chunk.knowledge_id,
+                filename=chunk.filename,
+                score=chunk.score,
+                snippet=chunk.content[:240],
+            )
+            for chunk in result.sources
+        ]
+
+        await self.messages.create(
+            conversation_id=conversation.id,
+            user_id=user_id,
+            role="user",
+            content=payload.message,
+            sources="[]",
+        )
+        await self.messages.create(
+            conversation_id=conversation.id,
+            user_id=user_id,
+            role="assistant",
+            content=result.answer,
+            sources=json.dumps([item.model_dump() for item in sources], ensure_ascii=False),
+        )
+        await self.session.commit()
+
+        try:
+            await self._maybe_extract_memories(
+                user_id, character.id, conversation.id, payload.message, result.answer
+            )
+        except Exception:
+            logger.exception("auto memory extraction failed")
+
+        return ChatResponse(
+            answer=result.answer,
+            conversation_id=conversation.id,
+            character_id=character.id,
+            model=result.model,
+            offline=result.offline,
+            sources=sources,
+            agents=[
+                AgentStepOut(agent=step.agent, role=step.role, output=step.output)
+                for step in result.steps
+            ],
+            sub_questions=result.sub_questions,
+            evidence=result.review_reason,
+            rounds=result.rounds,
+        )
 
     async def _refresh_summary(self, conversation: Conversation, user_id: int) -> str:
         """滚动摘要：把滑出窗口的旧消息并入会话摘要（长记忆第 1 件）。"""

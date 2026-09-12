@@ -11,6 +11,8 @@ class ChatRequest(BaseModel):
     conversation_id: int | None = None
     knowledge_id: int | None = None
     use_knowledge: bool = True
+    # single = 原有单轮 RAG；multi = 多 Agent 协作（拆解→查找→审查→整理）
+    rag_mode: str = "single"
 
 
 class SourceOut(BaseModel):
@@ -21,6 +23,12 @@ class SourceOut(BaseModel):
     snippet: str
 
 
+class AgentStepOut(BaseModel):
+    agent: str
+    role: str
+    output: str
+
+
 class ChatResponse(BaseModel):
     answer: str
     conversation_id: int
@@ -28,6 +36,11 @@ class ChatResponse(BaseModel):
     model: str
     offline: bool = False
     sources: list[SourceOut] = []
+    # 多 Agent 模式下的协作过程（single 模式为空）
+    agents: list[AgentStepOut] = []
+    sub_questions: list[str] = []
+    evidence: str = ""
+    rounds: int = 1
 
 
 class MessageOut(ORMModel):

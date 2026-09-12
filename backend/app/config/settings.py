@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     memory_auto_extract: bool = True        # 自动事实抽取
     memory_extract_every: int = 6           # 每 N 条消息触发一次抽取
 
+    # ---- 多 Agent RAG（拆解 / 查找 / 审查 / 整理）----
+    multi_agent_enabled: bool = True
+    multi_agent_max_rounds: int = 2   # 审查-补检的最大轮次（有界，防费用失控）
+    multi_agent_top_k: int = 4        # 每个子问题检索多少条证据
+
     # ---- Embedding (local hashing by default; or any OpenAI compatible API) ----
     embedding_provider: str = "local"  # local | openai
     embedding_api_base: str = ""
@@ -93,6 +98,11 @@ class Settings(BaseSettings):
     # ---- 权限（Phase 2）：逗号分隔的管理员用户名 ----
     admin_usernames: str = ""
 
+    # ---- 数据库自动备份（本地文件复制，零成本）----
+    backup_enabled: bool = True
+    backup_keep: int = 5
+    backup_dir: str = ""  # 留空 = data/backups
+
     # ------------------------------------------------------------------ #
     @property
     def sqlalchemy_url(self) -> str:
@@ -109,6 +119,10 @@ class Settings(BaseSettings):
     @property
     def allowed_extension_list(self) -> list[str]:
         return [item.strip().lower() for item in self.allowed_extensions.split(",") if item.strip()]
+
+    @property
+    def resolved_backup_dir(self) -> str:
+        return self.backup_dir or str(Path(self.data_dir) / "backups")
 
     @property
     def admin_username_list(self) -> list[str]:

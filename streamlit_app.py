@@ -265,6 +265,7 @@ def api_chat(
     use_knowledge: bool,
     ai_client: AIClient | None = None,
     embedding_config=None,
+    rag_mode: str = "single",
 ) -> dict:
     async def handler(session):
         payload = ChatRequest(
@@ -273,6 +274,7 @@ def api_chat(
             conversation_id=conversation_id,
             knowledge_id=knowledge_id,
             use_knowledge=use_knowledge,
+            rag_mode=rag_mode,
         )
         result = await ChatService(
             session, ai_client=ai_client, embedding_config=embedding_config
@@ -283,6 +285,13 @@ def api_chat(
             "offline": result.offline,
             "model": result.model,
             "sources": [item.filename + " (" + str(item.score) + ")" for item in result.sources],
+            "agents": [
+                {"agent": item.agent, "role": item.role, "output": item.output}
+                for item in result.agents
+            ],
+            "sub_questions": result.sub_questions,
+            "evidence": result.evidence,
+            "rounds": result.rounds,
         }
 
     return db_call(handler)
@@ -767,6 +776,15 @@ def page_chat(user_id: int) -> None:
         kb_options[item["name"] + "（#" + str(item["id"]) + "）"] = item["id"]
     kb_label = col2.selectbox("检索范围", list(kb_options.keys()))
     use_knowledge = col3.checkbox("启用知识库", value=True)
+    multi_agent = st.checkbox(
+        "🔬 多 Agent 深度检索（拆解 → 查找 → 审查 → 整理）",
+        value=False,
+        help=(
+            "开启后由 4 个 Agent 协作：把问题拆成子问题、分别检索、"
+            "审查证据是否充分（不足会自动补检一轮）、最后综合成稿。"
+            "更严谨但更慢、更耗 token；关闭则使用原有单轮 RAG。"
+        ),
+    )
 
     state_key = "chat_state_" + str(character_id)
     if state_key not in st.session_state:
@@ -803,6 +821,7 @@ def page_chat(user_id: int) -> None:
                         use_knowledge,
                         session_ai_client(),
                         session_embedding_config(),
+                        "multi" if multi_agent else "single",
                     )
                 except Exception as error:
                     record_usage(
@@ -826,6 +845,18 @@ def page_chat(user_id: int) -> None:
                     )
             if result:
                 st.markdown(result["answer"])
+                if result.get("agents"):
+                    with st.expander(
+                        "🔬 多 Agent 协作过程（" + str(result.get("rounds", 1)) + " 轮）",
+                        expanded=False,
+                    ):
+                        for step in result["agents"]:
+                            st.markdown("**" + step["agent"] + "** · " + step["role"])
+                            st.caption(step["output"][:800])
+                        if result.get("sub_questions"):
+                            st.caption("拆解出的子问题：" + "；".join(result["sub_questions"]))
+                        if result.get("evidence"):
+                            st.caption("证据审查结论：" + result["evidence"])
                 if result["sources"]:
                     st.caption("引用来源：" + "；".join(result["sources"]))
                 if result["offline"]:

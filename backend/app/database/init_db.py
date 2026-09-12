@@ -7,6 +7,7 @@ from sqlalchemy import inspect, text
 from app import models  # noqa: F401  (imports every model so metadata is complete)
 from app.config.settings import settings
 from app.core.security import hash_password
+from app.database.backup import backup_sqlite_database
 from app.database.base import Base
 from app.database.session import SessionLocal, engine
 from app.repositories.user_repository import UserRepository
@@ -42,6 +43,9 @@ def _sync_apply_migrations(sync_conn) -> list[str]:  # noqa: ANN001
 
 
 async def init_db() -> None:
+    # 先备份，再做任何结构变更 —— 迁移/测试出事都能回滚
+    backup_sqlite_database()
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         applied = await conn.run_sync(_sync_apply_migrations)
