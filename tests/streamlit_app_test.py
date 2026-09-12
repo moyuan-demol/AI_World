@@ -101,7 +101,26 @@ def main() -> int:
     else:
         print("  [SKIP] 未找到议题输入框")
 
-    print("\n== 6. 自愈：把 AI 伙伴全删光后应自动恢复 ==")
+    print("\n== 6a. 自愈：只删掉部分预置角色也要补回来 ==")
+    at.sidebar.radio[0].set_value("AI伙伴").run()
+    total_before = len([item for item in at.button if item.label == "删除"])
+    deleted_partial = 0
+    for _ in range(max(1, total_before - 1)):
+        remaining = [item for item in at.button if item.label == "删除"]
+        if not remaining:
+            break
+        remaining[0].click().run()
+        deleted_partial += 1
+    partial_markdown = " ".join(str(getattr(item, "value", "")) for item in at.markdown)
+    restored = sum(1 for name in ["张医生", "李工", "王顾问"] if "#### " + name in partial_markdown)
+    if restored == 3:
+        print("  [PASS] 删掉 " + str(deleted_partial) + " 个后，3 个预置角色自动补齐")
+    else:
+        FAILURES.append("部分删除后未补齐：只剩 " + str(restored) + " 个")
+        print("  [FAIL] 部分删除后未补齐：只剩 " + str(restored) + " 个")
+    check("部分自愈后页面无异常", at)
+
+    print("\n== 6b. 自愈：把 AI 伙伴全删光后应自动恢复 ==")
     at.sidebar.radio[0].set_value("AI伙伴").run()
     delete_buttons = [item for item in at.button if item.label == "删除"]
     total = len(delete_buttons)

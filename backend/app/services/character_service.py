@@ -81,11 +81,21 @@ class CharacterService:
         return await self.characters.count_by_user(user_id)
 
     async def ensure_defaults(self, user_id: int) -> int:
-        """Seed the starter companions for a brand new account."""
-        existing = await self.characters.count_by_user(user_id)
-        if existing > 0:
-            return 0
+        """补齐预置角色：**按名字判重，缺哪个补哪个**。
+
+        修正历史漏洞：旧实现只在「一个都不剩」（count == 0）时才恢复，
+        导致只删掉其中一两个时永远补不回来（公网演示站会一直缺角色）。
+
+        只补预置角色，绝不碰用户自己创建的角色。
+        """
+        characters = await self.characters.list_by_user(user_id)
+        existing_names = {item.name for item in characters}
+        created = 0
         for preset in DEFAULT_CHARACTERS:
+            if preset["name"] in existing_names:
+                continue
             await self.characters.create(user_id=user_id, **preset)
-        await self.session.commit()
-        return len(DEFAULT_CHARACTERS)
+            created += 1
+        if created:
+            await self.session.commit()
+        return created
