@@ -133,17 +133,27 @@ from app.services.usage_service import UsageService  # noqa: E402
 # --------------------------------------------------------------------------- #
 # 2. 异步桥：Streamlit 同步，后端 async；用常驻事件循环线程，避免跨循环报错
 # --------------------------------------------------------------------------- #
-_loop: asyncio.AbstractEventLoop | None = None
-_loop_lock = threading.Lock()
+@st.cache_resource(show_spinner=False)
+def _shared_loop() -> asyncio.AbstractEventLoop:
+    """进程内共享的事件循环（必须用 cache_resource 缓存！）。
+
+    踩过的坑：Streamlit **每次交互都会重新执行整个脚本**，
+    所以脚本级的全局变量（原来这里的 _loop）会在每次交互时被重置，
+    导致每次都新建一个事件循环；而 SQLAlchemy 的连接池是随模块
+    （sys.modules）缓存的，池里的连接仍然绑定在**旧循环**上 ——
+    于是 asyncpg/PostgreSQL 会抛
+    "got Future attached to a different loop"。
+    SQLite 的驱动恰好容忍这种错配，所以这个 bug 一直没暴露。
+
+    用 cache_resource 把它缓存到 Streamlit 运行时里，才能真正跨重跑存活。
+    """
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    return loop
 
 
 def _get_loop() -> asyncio.AbstractEventLoop:
-    global _loop
-    with _loop_lock:
-        if _loop is None or _loop.is_closed():
-            _loop = asyncio.new_event_loop()
-            threading.Thread(target=_loop.run_forever, daemon=True).start()
-        return _loop
+    return _shared_loop()
 
 
 def run_async(coro):

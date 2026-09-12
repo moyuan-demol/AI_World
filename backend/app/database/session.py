@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.config.settings import settings
 
@@ -20,8 +21,12 @@ engine_kwargs: dict = {
 if settings.is_sqlite:
     connect_args = {"check_same_thread": False}
 else:
-    # 云 Postgres（Neon / Supabase）空闲后会挂起计算实例，
-    # 定期回收连接 + pre_ping 可以避免拿到失效连接。
+    # 云 Postgres（Neon / Supabase）：
+    # 1) 用 NullPool：连接不跨请求复用，从根本上杜绝
+    #    "Future attached to a different loop"（连接绑在旧事件循环上）；
+    #    服务端有连接池（Neon -pooler）负责复用，开销可接受。
+    # 2) pool_recycle 仅对复用型池有意义，这里保留以防将来改回队列池。
+    engine_kwargs["poolclass"] = NullPool
     engine_kwargs["pool_recycle"] = 300
 
 engine = create_async_engine(
