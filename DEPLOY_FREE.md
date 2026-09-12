@@ -38,8 +38,13 @@
 
 ```toml
 APP_PASSWORD = "换成你自己的口令"
-# 可选：配置后就是真实 DeepSeek 回答
-DEEPSEEK_API_KEY = "sk-xxxx"
+
+# 可选：站点级 DeepSeek Key。建议留空 ——
+# 应用支持访客在侧边栏填自己的 Key（BYOK），留空则你零成本、零被刷风险。
+DEEPSEEK_API_KEY = ""
+
+# 可选：配置后侧边栏出现「📊 用量统计」（看谁用了什么；只记元数据，不记 Key 与对话内容）
+APP_ADMIN_PASSWORD = "你自己定的管理口令"
 ```
 
 保存后应用会自动重启，进去就需要口令。

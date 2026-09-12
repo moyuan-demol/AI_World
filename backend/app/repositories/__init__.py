@@ -4,6 +4,7 @@ from app.repositories.chat_repository import ConversationRepository, MessageRepo
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.repositories.memory_repository import MemoryRepository
+from app.repositories.usage_repository import UsageRepository
 from app.repositories.user_repository import UserRepository
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     "KnowledgeRepository",
     "MemoryRepository",
     "MessageRepository",
+    "UsageRepository",
     "UserRepository",
 ]

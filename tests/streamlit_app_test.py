@@ -24,8 +24,9 @@ def describe(element) -> str:
 
 def check(name: str, at: AppTest) -> None:
     if at.exception:
-        FAILURES.append(name + " -> " + describe(at.exception[0]))
-        print("  [FAIL] " + name)
+        detail = describe(at.exception[0])
+        FAILURES.append(name + " -> " + detail)
+        print("  [FAIL] " + name + " -> " + detail[:180])
     else:
         print("  [PASS] " + name)
 

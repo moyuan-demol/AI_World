@@ -4,6 +4,7 @@ from app.services.chat_service import ChatService
 from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
 from app.services.roundtable_service import RoundtableService
+from app.services.usage_service import UsageService
 
 __all__ = [
     "AuthService",
@@ -12,4 +13,5 @@ __all__ = [
     "KnowledgeService",
     "MemoryService",
     "RoundtableService",
+    "UsageService",
 ]

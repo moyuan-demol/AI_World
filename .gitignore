@@ -18,6 +18,10 @@ yarn-error.log*
 .env.local
 backend/.env
 
+# Streamlit 本地密钥（绝不能被提交）
+.streamlit/secrets.toml
+**/secrets.toml
+
 # ---- Data / runtime ----
 data/*.db
 data/*.db-journal

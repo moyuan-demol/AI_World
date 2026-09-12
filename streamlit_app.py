@@ -15,7 +15,9 @@ import os
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
+from uuid import uuid4
 
 import streamlit as st
 
@@ -74,6 +76,7 @@ from app.services.character_service import CharacterService  # noqa: E402
 from app.services.chat_service import ChatService  # noqa: E402
 from app.services.knowledge_service import KnowledgeService  # noqa: E402
 from app.services.roundtable_service import RoundtableService  # noqa: E402
+from app.services.usage_service import UsageService  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # 2. 异步桥：Streamlit 同步，后端 async；用常驻事件循环线程，避免跨循环报错
@@ -321,6 +324,7 @@ def api_run_roundtable(
             "manager_brief": result.manager_brief,
             "summary": result.summary,
             "manager": result.manager,
+            "model": result.model,
             "offline": result.offline,
             "sources": result.sources,
             "results": [
@@ -338,6 +342,25 @@ def api_run_roundtable(
 st.set_page_config(page_title="AI World · AI 世界", page_icon="🌍", layout="wide")
 
 MODULES = ["我的世界", "AI伙伴", "知识世界", "AI聊天", "AI圆桌"]
+USAGE_PAGE = "📊 用量统计"
+
+
+def admin_password() -> str:
+    """站点管理员口令（在 Secrets 里配 APP_ADMIN_PASSWORD）。
+
+    未配置时，「用量统计」页面对所有访客隐藏。
+    """
+    try:
+        return str(st.secrets.get("APP_ADMIN_PASSWORD", "") or "")
+    except Exception:
+        return ""
+
+
+def nav_items() -> list[str]:
+    items = list(MODULES)
+    if admin_password():
+        items.append(USAGE_PAGE)
+    return items
 
 
 def required_password() -> str:
@@ -374,11 +397,78 @@ def session_ai_client() -> AIClient | None:
     return AIClient(api_key=key, base_url=base or None, model=model or None)
 
 
+def session_key() -> str:
+    """本浏览器会话的匿名标识，用于区分不同访客（不含任何个人信息）。"""
+    if "sid" not in st.session_state:
+        st.session_state.sid = uuid4().hex[:12]
+    return st.session_state.sid
+
+
+def client_ip() -> str:
+    """尽力获取访客 IP（平台不提供时返回空字符串）。"""
+    try:
+        context = st.context
+        headers = getattr(context, "headers", None)
+        forwarded = headers.get("X-Forwarded-For") if headers else None
+        if forwarded:
+            return forwarded.split(",")[0].strip()[:64]
+        return str(getattr(context, "ip_address", "") or "")[:64]
+    except Exception:
+        return ""
+
+
+def record_usage(
+    user_id: int,
+    action: str,
+    *,
+    model: str = "",
+    using_own_key: bool = False,
+    success: bool = True,
+    latency_ms: int = 0,
+    answer_chars: int = 0,
+    error_type: str = "",
+) -> None:
+    """写审计记录：只记元数据，绝不记录 API Key，也不记录对话内容。"""
+
+    async def handler(session):
+        await UsageService(session).record(
+            user_id=user_id,
+            action=action,
+            model=model,
+            using_own_key=using_own_key,
+            success=success,
+            latency_ms=latency_ms,
+            answer_chars=answer_chars,
+            error_type=error_type,
+            session_id=session_key(),
+            ip=client_ip(),
+        )
+
+    try:
+        db_call(handler)
+    except Exception:
+        pass  # 审计失败绝不能影响主流程
+
+
+def api_usage_recent(user_id: int, limit: int = 50) -> list[dict]:
+    async def handler(session):
+        return await UsageService(session).recent(limit=limit, user_id=user_id)
+
+    return db_call(handler)
+
+
+def api_usage_summary(user_id: int, hours: int = 24) -> dict:
+    async def handler(session):
+        return await UsageService(session).summary(hours=hours, user_id=user_id)
+
+    return db_call(handler)
+
+
 def sidebar(user_id: int, username: str) -> str:
     with st.sidebar:
         st.markdown("### 🌍 AI World")
         st.caption("个人/企业级 AI 智能空间")
-        page = st.radio("导航", MODULES, label_visibility="collapsed")
+        page = st.radio("导航", nav_items(), label_visibility="collapsed")
         st.divider()
 
         st.markdown("**运行状态**")
@@ -527,6 +617,7 @@ def page_knowledge(user_id: int) -> None:
                 knowledge_id = None
                 if target != options[0]:
                     knowledge_id = bases[options.index(target) - 1]["id"]
+                started = time.perf_counter()
                 try:
                     with st.spinner("解析、切片、向量化中..."):
                         result = api_upload_document(
@@ -536,12 +627,25 @@ def page_knowledge(user_id: int) -> None:
                             knowledge_id,
                             uploaded.name if knowledge_id is None else None,
                         )
+                    record_usage(
+                        user_id,
+                        "upload",
+                        latency_ms=int((time.perf_counter() - started) * 1000),
+                        answer_chars=int(result["char_count"]),
+                    )
                     st.success(
                         "已入库：" + result["filename"] + "，生成 " + str(result["chunk_count"])
                         + " 个切片（" + str(result["char_count"]) + " 字符）"
                     )
                     st.rerun()
                 except Exception as error:
+                    record_usage(
+                        user_id,
+                        "upload",
+                        success=False,
+                        latency_ms=int((time.perf_counter() - started) * 1000),
+                        error_type=type(error).__name__,
+                    )
                     st.error(str(error))
 
     st.divider()
@@ -610,8 +714,10 @@ def page_chat(user_id: int) -> None:
         messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
+        own_key = session_ai_client() is not None
         with st.chat_message("assistant"):
             with st.spinner("检索知识库并生成回答..."):
+                started = time.perf_counter()
                 try:
                     result = api_chat(
                         user_id,
@@ -623,8 +729,25 @@ def page_chat(user_id: int) -> None:
                         session_ai_client(),
                     )
                 except Exception as error:
+                    record_usage(
+                        user_id,
+                        "chat",
+                        using_own_key=own_key,
+                        success=False,
+                        latency_ms=int((time.perf_counter() - started) * 1000),
+                        error_type=type(error).__name__,
+                    )
                     st.error("调用失败：" + str(error))
                     result = None
+                else:
+                    record_usage(
+                        user_id,
+                        "chat",
+                        model=result.get("model", ""),
+                        using_own_key=own_key,
+                        latency_ms=int((time.perf_counter() - started) * 1000),
+                        answer_chars=len(result["answer"] or ""),
+                    )
             if result:
                 st.markdown(result["answer"])
                 if result["sources"]:
@@ -685,14 +808,33 @@ def page_roundtable(user_id: int) -> None:
             match = [item for item in bases if item["name"] == kb_label]
             knowledge_id = match[0]["id"] if match else None
 
+        own_key = session_ai_client() is not None
         with st.spinner("主持 Agent 拆解议题，各专家 Agent 并行回复中..."):
+            started = time.perf_counter()
             try:
                 result = api_run_roundtable(
                     user_id, question.strip(), chosen_agents, use_knowledge, knowledge_id, session_ai_client()
                 )
             except Exception as error:
+                record_usage(
+                    user_id,
+                    "roundtable",
+                    using_own_key=own_key,
+                    success=False,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    error_type=type(error).__name__,
+                )
                 st.error("讨论失败：" + str(error))
                 return
+            else:
+                record_usage(
+                    user_id,
+                    "roundtable",
+                    model=result.get("model", ""),
+                    using_own_key=own_key,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    answer_chars=len(result["summary"] or ""),
+                )
 
         if result["offline"]:
             st.warning("离线演示模式：未配置 DEEPSEEK_API_KEY，以下为本地占位内容。")
@@ -712,6 +854,57 @@ def page_roundtable(user_id: int) -> None:
             if result["sources"]:
                 st.caption("参考：" + "、".join(result["sources"]))
             st.markdown(result["summary"])
+
+
+def page_usage(user_id: int) -> None:
+    st.title("📊 用量统计")
+    st.caption(
+        "记录「谁在什么时候用了什么功能」。只记录元数据："
+        "**不记录 API Key，也不记录对话内容**。"
+    )
+
+    needed = admin_password()
+    if not needed:
+        st.warning("未配置 APP_ADMIN_PASSWORD（Secrets），该页面不可用。")
+        return
+    if not st.session_state.get("admin_ok"):
+        st.info("该页面仅站点管理员可见。")
+        entered = st.text_input("管理口令", type="password")
+        if st.button("查看", type="primary"):
+            if entered == needed:
+                st.session_state.admin_ok = True
+                st.rerun()
+            else:
+                st.error("口令不正确")
+        return
+
+    hours = st.selectbox("统计窗口", [24, 72, 168, 720], index=0, format_func=lambda value: str(value) + " 小时")
+    summary = api_usage_summary(user_id, hours=int(hours))
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("调用次数", summary["total"])
+    col2.metric("独立访客（会话）", summary["sessions"])
+    col3.metric("自带 Key 次数", summary["own_key"])
+    col4.metric("失败次数", summary["failures"])
+    st.caption(
+        "平均耗时 " + str(summary["avg_latency_ms"]) + " ms · 累计回答 "
+        + str(summary["answer_chars"]) + " 字符"
+    )
+    if summary["by_action"]:
+        st.write(
+            "按功能：" + "、".join(str(key) + " " + str(value) for key, value in summary["by_action"].items())
+        )
+
+    st.divider()
+    st.subheader("最近 50 条记录")
+    rows = api_usage_recent(user_id, limit=50)
+    if not rows:
+        st.info("暂无记录。")
+    else:
+        st.dataframe(rows)
+    st.caption(
+        "说明：Streamlit Cloud 免费实例的文件系统是临时的，重启/重新部署后本表会清空（演示用途足够）。"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -738,6 +931,8 @@ def main() -> None:
         page_chat(user_id)
     elif page == "AI圆桌":
         page_roundtable(user_id)
+    elif page == USAGE_PAGE:
+        page_usage(user_id)
 
 
 main()

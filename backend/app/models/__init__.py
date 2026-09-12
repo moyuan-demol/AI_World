@@ -5,6 +5,7 @@ from app.models.chat import Conversation, Message
 from app.models.document import Document
 from app.models.knowledge import KnowledgeBase
 from app.models.memory import Memory
+from app.models.usage_log import UsageLog
 from app.models.user import User
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     "KnowledgeBase",
     "Memory",
     "Message",
+    "UsageLog",
     "User",
 ]
