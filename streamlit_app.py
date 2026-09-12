@@ -30,16 +30,27 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 
-def _load_streamlit_secrets_into_env() -> None:
-    """把 Streamlit secrets 注入环境变量，后端 Settings 会自动读取。"""
+def _load_streamlit_secrets_into_env() -> dict:
+    """把 Streamlit secrets 注入环境变量，并返回诊断信息（用于界面自检）。
+
+    注意：Secrets 里只要有一行 TOML 不合法，st.secrets 会**整体读取失败**，
+    此时必须把错误暴露出来，而不是静默回落到 SQLite（否则用户完全看不出问题）。
+    """
+    report: dict = {"ok": False, "keys": [], "error": ""}
     try:
         secrets = dict(st.secrets)
-    except Exception:
-        return
+    except Exception as exc:
+        report["error"] = type(exc).__name__ + ": " + str(exc)[:220]
+        return report
+
     for key, value in secrets.items():
         name = str(key).upper()
         if name.isupper() and isinstance(value, (str, int, float)):
-            os.environ.setdefault(name, str(value))
+            # 用直接赋值：secrets 的优先级高于环境里可能存在的同名空值
+            os.environ[name] = str(value)
+            report["keys"].append(name)
+    report["ok"] = True
+    return report
 
 
 def _pick_writable_data_dir() -> Path:
@@ -56,7 +67,7 @@ def _pick_writable_data_dir() -> Path:
         return fallback
 
 
-_load_streamlit_secrets_into_env()
+SECRETS_REPORT: dict = _load_streamlit_secrets_into_env()
 DATA_DIR = _pick_writable_data_dir()
 os.environ.setdefault("DATA_DIR", str(DATA_DIR))
 os.environ.setdefault("UPLOAD_DIR", str(DATA_DIR / "uploads"))
@@ -532,6 +543,19 @@ def sidebar(user_id: int, username: str) -> str:
         st.write(
             "数据库：" + ("PostgreSQL（云端，长期保留）" if not settings.is_sqlite else "SQLite（本地文件）")
         )
+        # 配置自检：让"Secret 没生效"这类问题一眼可见，而不是静默回落
+        if not settings.is_sqlite:
+            pass
+        elif (os.environ.get("DATABASE_URL") or "").strip():
+            st.error("检测到 DATABASE_URL 但仍在用 SQLite：连接串格式可能不被识别")
+        elif SECRETS_REPORT.get("error"):
+            st.error("Secrets 读取失败（整个 secrets 都失效了）")
+            st.caption(str(SECRETS_REPORT["error"]))
+        else:
+            loaded = ", ".join(SECRETS_REPORT.get("keys") or [])
+            st.caption("已读取的 Secrets：" + (loaded or "（空）"))
+            if "DATABASE_URL" not in (SECRETS_REPORT.get("keys") or []):
+                st.caption("未发现 DATABASE_URL —— 请确认 Secrets 里是「DATABASE_URL = 连接串」这种键值格式")
 
         with st.expander("🧠 使用我自己的向量服务（可选，提升检索质量）"):
             st.caption(
