@@ -39,10 +39,17 @@ class Settings(BaseSettings):
     # ---- DeepSeek / LLM ----
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-chat"
+    # 注意：deepseek-chat / deepseek-reasoner 已于 2026-07-24 停用，
+    # 请使用 deepseek-v4-flash（默认）/ deepseek-v4-pro / deepseek-v4-flash-vision-exp
+    deepseek_model: str = "deepseek-v4-flash"
     ai_timeout_seconds: float = 90.0
     ai_temperature: float = 0.7
     ai_max_tokens: int = 2048
+
+    # ---- 上下文与记忆 ----
+    history_limit: int = 12          # 每次带多少条历史消息
+    history_char_budget: int = 6000  # 历史消息总字符预算（超出则从最旧的丢弃）
+    memory_inject_limit: int = 5     # 注入多少条长期记忆
 
     # ---- Embedding (local hashing by default; or any OpenAI compatible API) ----
     embedding_provider: str = "local"  # local | openai

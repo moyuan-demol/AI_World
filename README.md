@@ -186,7 +186,7 @@ docker compose up --build
 | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | 空 | DeepSeek API Key，**只放服务端**，绝不写进前端代码 |
 | `DEEPSEEK_BASE_URL` | https://api.deepseek.com | 兼容 OpenAI 协议的服务地址 |
-| `DEEPSEEK_MODEL` | deepseek-chat | 模型名 |
+| `DEEPSEEK_MODEL` | deepseek-v4-flash | 模型名。**deepseek-chat / deepseek-reasoner 已于 2026-07-24 停用**，可选 `deepseek-v4-flash` / `deepseek-v4-pro` / `deepseek-v4-flash-vision-exp` |
 | `EMBEDDING_PROVIDER` | local | `local` = 内置离线哈希向量；`openai` = 调用外部向量服务 |
 | `EMBEDDING_API_BASE` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL` | 空 / 空 / BAAI/bge-m3 | 外部向量服务配置 |
 | `EMBEDDING_DIM` | 512 | 本地向量维度（换向量方案需重新入库） |
@@ -301,6 +301,42 @@ AI 圆桌、记忆系统、跨用户数据隔离、上传安全（扩展名 / �
 
 ---
 
+### 八·一、文本切片（不是用向量切的）
+
+切片用的是「规则 + 语言边界」的递归切分，和向量无关：
+
+1. **规范化**：统一换行、压缩空白
+2. **段落切分**：按空行分段
+3. **句子切分**：段内超过 `CHUNK_SIZE` 时，按 。！？；; . 断句
+4. **硬切分**：单句仍然超长时，按字符数切开
+5. **重叠**：相邻切片保留 `CHUNK_OVERLAP`（默认 100 字符）尾部，避免跨切片语义断裂
+
+可调参数：`CHUNK_SIZE`（默认 600）、`CHUNK_OVERLAP`（默认 100）。
+升级方向：Markdown 标题感知切分、语义切分（按相邻句子向量距离突变处切）、父子块（small-to-big）。
+
+### 八·二、向量与检索
+
+- **向量** = 把一段文本变成一串数字（默认 512 维），检索时用**余弦相似度**取 Top-K（`RETRIEVAL_TOP_K`，默认 4）。
+- 默认 `EMBEDDING_PROVIDER=local`：按字/词做哈希映射 + L2 归一化。
+  零依赖、可离线、零成本，但**本质是关键词重合度，不是语义模型**
+  （例如「心梗」和「心肌梗死」可能匹配不上）。
+- 想要真正的语义检索：`EMBEDDING_PROVIDER=openai` + `EMBEDDING_API_BASE` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL`（如 BGE-M3）。
+  > **事实**：DeepSeek 官方**没有** embedding 接口，所以向量化只能用第三方兼容服务或本地实现。
+- 更换向量模型后需要**重新上传文件**（旧向量与新向量不在同一空间，无法比较）。
+
+### 八·三、上下文与记忆（重要限制，请务必了解）
+
+| 机制 | 现状 | 限制 |
+| --- | --- | --- |
+| 对话历史 | 最近 `HISTORY_LIMIT`（12）条 + `HISTORY_CHAR_BUDGET`（6000 字符）预算 | **超出预算的最旧消息会被丢弃**，不是无限记忆 |
+| 长期记忆 | Memory 表，按「角色专属 + 全局」取 `MEMORY_INJECT_LIMIT`（5）条注入 system prompt | 需显式写入（`/api/memories`）；按写入时间取，非相关度 |
+| 知识库片段 | 每次检索 Top-K 片段，总长受 `MAX_CONTEXT_CHARS` 限制 | 与对话历史相互独立 |
+
+**结论：长对话一定会遗忘早期内容。** 要长期记住事实，请写入记忆表。想更强可升级：
+
+1. **滚动摘要（rolling summary）**：上下文超预算时，让模型把旧消息压缩成摘要替换原文（成本：多一次 LLM 调用）
+2. **历史 RAG 化**：把历史消息也切片向量化，按相关度检索注入（长对话最佳，实现最复杂）
+
 ## 九、安全与可信设计
 
 这一版把「安全、可靠、值得信任」当作硬要求，具体落实如下：
@@ -394,7 +430,10 @@ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/ai_world
 能。所有页面和流程都能跑通，AI 回答会标注「离线演示模式」。
 
 **Q：为什么回答和知识库关系不大？**
-默认向量是离线哈希向量（零依赖、可离线），语义能力有限。把 `EMBEDDING_PROVIDER` 换成 `openai` 并配置 BGE-M3 之类的服务，检索质量会明显提升（换模型后需要重新上传文件）。
+默认向量是离线哈希向量（零依赖、可离线），语义能力有限。把 `EMBEDDING_PROVIDER` 换成 `openai` 并配置 BGE-M3 之类的服务，检索质量会明显提升（换模型后需要重新上传文件）。详见「八·一 ~ 八·三」。
+
+**Q：聊久了 AI 会忘记前面说的？**
+会。上下文是「最近 12 条消息 / 6000 字符预算」的固定窗口，超出即丢弃（详见「八·三」）。要跨会话记住事实，请调用 `POST /api/memories` 写入记忆。
 
 **Q：PDF 上传提示「未提取到文本」？**
 扫描版 PDF 没有文本层，需要先做 OCR。

@@ -393,8 +393,18 @@ def session_ai_client() -> AIClient | None:
     if not key:
         return None
     base = (st.session_state.get("ai_base") or "").strip()
-    model = (st.session_state.get("ai_model") or "").strip()
-    return AIClient(api_key=key, base_url=base or None, model=model or None)
+    return AIClient(api_key=key, base_url=base or None, model=active_model_name())
+
+
+KNOWN_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
+
+
+def active_model_name() -> str:
+    pick = (st.session_state.get("ai_model_pick") or "").strip()
+    if pick and pick != "自定义":
+        return pick
+    custom = (st.session_state.get("ai_model") or "").strip()
+    return custom or settings.deepseek_model
 
 
 def session_key() -> str:
@@ -479,8 +489,21 @@ def sidebar(user_id: int, username: str) -> str:
             st.info("在线：使用站点配置的 DeepSeek Key（所有访客共用）")
         else:
             st.warning("离线演示模式：回答为本地占位内容")
-        st.write("模型：" + (st.session_state.get("ai_model") or settings.deepseek_model))
-        st.write("向量：" + settings.embedding_provider + " / " + str(settings.embedding_dim))
+        st.write("模型：" + active_model_name())
+        embedding_label = (
+            "内置离线（关键词哈希，非语义模型）"
+            if settings.embedding_provider == "local"
+            else ("外部服务 " + settings.embedding_model)
+        )
+        st.write("文本向量：" + embedding_label)
+        with st.expander("❓ 什么是「文本向量」"):
+            st.caption(
+                "把文本转成一串数字（向量），检索时用余弦相似度衡量「哪段资料和问题最接近」。"
+                "当前为内置离线实现：按字/词哈希到 "
+                + str(settings.embedding_dim)
+                + " 维，本质是关键词重合度，**不是**真正的语义模型。"
+                "配置 EMBEDDING_PROVIDER=openai + 外部向量服务（如 BGE-M3）后才会获得语义级检索。"
+            )
         st.write("账号：" + username)
 
         with st.expander("🔑 使用我自己的 API Key（可选）", expanded=not using_own_key and not settings.ai_configured):
@@ -491,8 +514,15 @@ def sidebar(user_id: int, username: str) -> str:
             )
             st.text_input("API Key", type="password", key="ai_key", placeholder="sk-...")
             st.text_input("API Base（兼容 OpenAI 协议）", key="ai_base", placeholder="https://api.deepseek.com")
-            st.text_input("模型名称", key="ai_model", placeholder="deepseek-chat")
-            st.caption("除 DeepSeek 外，也可填任何兼容 OpenAI 协议的服务地址与模型名。")
+            if "ai_model_pick" not in st.session_state:
+                st.session_state.ai_model_pick = settings.deepseek_model
+            st.selectbox("模型", KNOWN_MODELS + ["自定义"], key="ai_model_pick")
+            if st.session_state.get("ai_model_pick") == "自定义":
+                st.text_input("自定义模型名", key="ai_model", placeholder="例如 your-model-name")
+            st.caption(
+                "deepseek-chat / deepseek-reasoner 已于 2026-07-24 停用，请使用 v4 系列。"
+                "也可填任何兼容 OpenAI 协议的服务地址与模型名。"
+            )
 
         st.caption("所有数据按用户隔离；本演示站点使用共享演示账号。")
     return page
