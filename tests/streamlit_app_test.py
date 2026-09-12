@@ -5,8 +5,17 @@
     python tests/streamlit_app_test.py
 """
 
+import os
 import sys
+import tempfile
 from pathlib import Path
+
+# 数据安全：测试必须使用独立的临时数据库，绝不能碰 data/database.db（真实数据）。
+# 必须在应用读取配置之前设置环境变量。
+_TEST_DIR = Path(tempfile.mkdtemp(prefix="ai_world_streamlit_test_"))
+os.environ["DATA_DIR"] = str(_TEST_DIR)
+os.environ["UPLOAD_DIR"] = str(_TEST_DIR / "uploads")
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///" + (_TEST_DIR / "test.db").as_posix()
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:

@@ -7,9 +7,18 @@
 """
 
 import asyncio
+import os
 import sys
+import tempfile
 import threading
 from pathlib import Path
+
+# 数据安全：使用独立临时数据库，绝不触碰真实 data/database.db。
+# 必须在导入 app.config.settings 之前设置环境变量。
+_TEST_DIR = Path(tempfile.mkdtemp(prefix="ai_world_context_test_"))
+os.environ["DATA_DIR"] = str(_TEST_DIR)
+os.environ["UPLOAD_DIR"] = str(_TEST_DIR / "uploads")
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///" + (_TEST_DIR / "test.db").as_posix()
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
