@@ -59,6 +59,7 @@ DATA_DIR = _pick_writable_data_dir()
 os.environ.setdefault("DATA_DIR", str(DATA_DIR))
 os.environ.setdefault("UPLOAD_DIR", str(DATA_DIR / "uploads"))
 
+from app.ai.deepseek_client import AIClient  # noqa: E402
 from app.config.settings import settings  # noqa: E402
 from app.core.files import sanitize_filename, validate_signature  # noqa: E402
 from app.database.init_db import init_db  # noqa: E402
@@ -256,6 +257,7 @@ def api_chat(
     conversation_id,
     knowledge_id,
     use_knowledge: bool,
+    ai_client: AIClient | None = None,
 ) -> dict:
     async def handler(session):
         payload = ChatRequest(
@@ -265,7 +267,7 @@ def api_chat(
             knowledge_id=knowledge_id,
             use_knowledge=use_knowledge,
         )
-        result = await ChatService(session).chat(user_id, payload)
+        result = await ChatService(session, ai_client=ai_client).chat(user_id, payload)
         return {
             "answer": result.answer,
             "conversation_id": result.conversation_id,
@@ -298,7 +300,14 @@ def api_roundtable_agents(user_id: int) -> list[dict]:
     return db_call(handler)
 
 
-def api_run_roundtable(user_id: int, question: str, agents: list[dict], use_knowledge: bool, knowledge_id) -> dict:
+def api_run_roundtable(
+    user_id: int,
+    question: str,
+    agents: list[dict],
+    use_knowledge: bool,
+    knowledge_id,
+    ai_client: AIClient | None = None,
+) -> dict:
     async def handler(session):
         payload = RoundtableRequest(
             question=question,
@@ -307,7 +316,7 @@ def api_run_roundtable(user_id: int, question: str, agents: list[dict], use_know
             use_knowledge=use_knowledge,
             include_manager=True,
         )
-        result = await RoundtableService(session).run(user_id, payload)
+        result = await RoundtableService(session, ai_client=ai_client).run(user_id, payload)
         return {
             "manager_brief": result.manager_brief,
             "summary": result.summary,
@@ -355,18 +364,46 @@ def password_gate() -> None:
     st.stop()
 
 
+def session_ai_client() -> AIClient | None:
+    """访客自带 Key -> 用他自己的；没填 -> None（走站点配置或离线演示）。"""
+    key = (st.session_state.get("ai_key") or "").strip()
+    if not key:
+        return None
+    base = (st.session_state.get("ai_base") or "").strip()
+    model = (st.session_state.get("ai_model") or "").strip()
+    return AIClient(api_key=key, base_url=base or None, model=model or None)
+
+
 def sidebar(user_id: int, username: str) -> str:
     with st.sidebar:
         st.markdown("### 🌍 AI World")
         st.caption("个人/企业级 AI 智能空间")
         page = st.radio("导航", MODULES, label_visibility="collapsed")
         st.divider()
+
         st.markdown("**运行状态**")
-        st.write("模型：" + (settings.deepseek_model if settings.ai_configured else "离线演示模式"))
+        using_own_key = bool((st.session_state.get("ai_key") or "").strip())
+        if using_own_key:
+            st.success("在线：正在使用你自己的 API Key 🔑")
+        elif settings.ai_configured:
+            st.info("在线：使用站点配置的 DeepSeek Key（所有访客共用）")
+        else:
+            st.warning("离线演示模式：回答为本地占位内容")
+        st.write("模型：" + (st.session_state.get("ai_model") or settings.deepseek_model))
         st.write("向量：" + settings.embedding_provider + " / " + str(settings.embedding_dim))
         st.write("账号：" + username)
-        if not settings.ai_configured:
-            st.info("未配置 DEEPSEEK_API_KEY，聊天与圆桌返回本地占位回答。")
+
+        with st.expander("🔑 使用我自己的 API Key（可选）", expanded=not using_own_key and not settings.ai_configured):
+            st.caption(
+                "填入你自己的 Key 后，对话与圆桌会使用你的额度。"
+                "Key 只保存在本浏览器会话内存中：不写入数据库、不写日志、不与其他访客共享。"
+                "清空即恢复默认。"
+            )
+            st.text_input("API Key", type="password", key="ai_key", placeholder="sk-...")
+            st.text_input("API Base（兼容 OpenAI 协议）", key="ai_base", placeholder="https://api.deepseek.com")
+            st.text_input("模型名称", key="ai_model", placeholder="deepseek-chat")
+            st.caption("除 DeepSeek 外，也可填任何兼容 OpenAI 协议的服务地址与模型名。")
+
         st.caption("所有数据按用户隔离；本演示站点使用共享演示账号。")
     return page
 
@@ -583,6 +620,7 @@ def page_chat(user_id: int) -> None:
                         st.session_state.get("conv_" + str(character_id)),
                         kb_options[kb_label] if use_knowledge else None,
                         use_knowledge,
+                        session_ai_client(),
                     )
                 except Exception as error:
                     st.error("调用失败：" + str(error))
@@ -650,7 +688,7 @@ def page_roundtable(user_id: int) -> None:
         with st.spinner("主持 Agent 拆解议题，各专家 Agent 并行回复中..."):
             try:
                 result = api_run_roundtable(
-                    user_id, question.strip(), chosen_agents, use_knowledge, knowledge_id
+                    user_id, question.strip(), chosen_agents, use_knowledge, knowledge_id, session_ai_client()
                 )
             except Exception as error:
                 st.error("讨论失败：" + str(error))

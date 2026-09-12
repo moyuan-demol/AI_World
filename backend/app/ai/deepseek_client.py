@@ -30,10 +30,17 @@ class AIResult:
 class AIClient:
     """Thin wrapper around the DeepSeek chat completions endpoint."""
 
-    def __init__(self) -> None:
-        self.api_key = settings.deepseek_api_key.strip()
-        self.base_url = settings.deepseek_base_url.rstrip("/")
-        self.model = settings.deepseek_model
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        # 允许运行时传入凭据（站点配置，或访客自带的 Key）。
+        # 都不传就回落到服务端 .env；仍然没有则进入离线演示模式。
+        self.api_key = (api_key if api_key is not None else settings.deepseek_api_key).strip()
+        self.base_url = (base_url or settings.deepseek_base_url).rstrip("/")
+        self.model = model or settings.deepseek_model
 
     @property
     def is_configured(self) -> bool:
@@ -97,10 +104,10 @@ class AIClient:
                 question = message.get("content", "")
                 break
         return (
-            "【离线演示模式】当前未配置 DEEPSEEK_API_KEY，以下为本地占位回答。\n\n"
+            "【离线演示模式】当前没有可用的模型 API Key，以下为本地占位回答。\n\n"
             "你的问题是：" + question[:200] + "\n\n"
-            "在 AI World 项目根目录创建 .env 文件并填写 DEEPSEEK_API_KEY 之后，"
-            "这里会返回真实的 DeepSeek 模型回答。"
+            "在左侧边栏「使用我自己的 API Key」里填入你自己的 Key，"
+            "或由站点管理员配置 DEEPSEEK_API_KEY，这里就会返回真实的模型回答。"
         )
 
 
