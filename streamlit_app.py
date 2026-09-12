@@ -1261,6 +1261,22 @@ def page_chat(user_id: int) -> None:
                         answer_chars=len(result["answer"] or ""),
                     )
             if result:
+                # 角色视角标注：明确是谁、以什么身份/风格在回答
+                speaker = active_character or {}
+                viewpoint = (
+                    "🎭 由「"
+                    + str(speaker.get("name", ""))
+                    + "（"
+                    + str(speaker.get("role") or "AI 伙伴")
+                    + "）」"
+                    + (
+                        "以「" + str(speaker.get("speaking_style")) + "」的方式"
+                        if speaker.get("speaking_style")
+                        else ""
+                    )
+                    + "回答"
+                )
+                st.caption(viewpoint)
                 st.markdown(result["answer"])
                 if result.get("agents"):
                     with st.expander(
@@ -1386,7 +1402,7 @@ def page_roundtable(user_id: int) -> None:
             with columns[index % 2]:
                 with st.container(border=True):
                     st.markdown("#### " + item["agent"])
-                    st.caption(item["role"])
+                    st.caption("🎭 视角：" + (item["role"] or "AI 专家") + "（仅被召唤的角色参与发言）")
                     st.markdown(item["answer"])
         if result["summary"]:
             st.divider()
