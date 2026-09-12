@@ -90,6 +90,59 @@ CORS_ORIGINS=https://ai-world.pages.dev
 
 ---
 
+## 接入免费云数据库（Neon）—— 让云端数据永久保留
+
+**为什么需要**：Streamlit Cloud 免费实例的文件系统是**临时的**，重新部署/重启会清空数据库 ——
+AI 伙伴、知识库、对话记录、用量统计都会没。接一个免费的云 Postgres 即可彻底解决。
+
+### 第 1 步：注册 Neon（免费，无需信用卡）
+
+1. 打开 https://neon.tech -> `Sign up` -> 用 GitHub 账号登录（最省事）
+2. 点 `Create project`：
+   - Region：选 **Singapore** 或 **US West**（离 Streamlit Cloud 近，延迟低）
+   - Postgres version：默认即可
+3. 创建完成后，在 `Connection string` 面板里选 **Pooled connection**（带 `-pooler` 的那种，更稳）
+4. 复制整条连接串，形如：
+
+``
+postgresql://用户名:密码@ep-xxx-pooler.区域.aws.neon.tech/neondb?sslmode=require
+``
+
+### 第 2 步：贴进 Streamlit Secrets
+
+Streamlit Cloud -> 你的应用 -> 右侧 `Settings` -> `Secrets`，加入一行：
+
+`toml`
+# 原样粘贴即可：代码会自动把 sslmode 转成 ssl、并切换成异步驱动 asyncpg
+DATABASE_URL = "postgresql://用户名:密码@ep-xxx-pooler.区域.aws.neon.tech/neondb?sslmode=require"
+``
+
+保存后应用会自动重启。
+
+### 第 3 步：确认切换成功
+
+看侧边栏「运行状态」：
+
+- ✅ 成功：**数据库：PostgreSQL（云端，长期保留）**
+- ❌ 仍是：数据库：SQLite（本地文件）-> 说明 `DATABASE_URL` 没生效（检查拼写/引号）
+
+之后创建的角色、上传的知识库、对话记录**都不会再因重启消失**。
+
+### 已为你处理好的坑
+
+| 坑 | 处理方式 |
+| --- | --- |
+| 平台给的是 `postgres://` 前缀 | 自动换成 `postgresql+asyncpg://` |
+| 连接串里的 `?sslmode=require` | 自动换成 asyncpg 认的 `?ssl=require` |
+| 附带 `channel_binding` 等 libpq 参数 | 自动丢弃 |
+| 空闲挂起导致连接失效 | 已开 `pool_pre_ping` + `pool_recycle=300` |
+| 首次连接需要建表 | 启动时自动 `create_all` + 只做 ADD COLUMN 的安全迁移 |
+
+> 免费档够用：Neon Free 有 0.5GB 存储、计算实例空闲 5 分钟后挂起（下次访问自动唤醒，约 0.5 秒）。
+> 本项目的云端数据量远小于这个额度。
+
+---
+
 ## 常见问题
 
 **Q：为什么本地 127.0.0.1 别人打不开？**

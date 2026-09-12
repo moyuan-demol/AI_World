@@ -13,6 +13,57 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # AI_World/  (backend/app/config/settings.py -> parents[3])
 BASE_DIR = Path(__file__).resolve().parents[3]
 
+# libpq 专用参数，asyncpg 不认识，直接丢弃
+_DROP_QUERY_KEYS = {"channel_binding", "target_session_attrs", "options"}
+
+
+def normalize_database_url(url: str) -> str:
+    """把平台给的 PostgreSQL 连接串规范成 asyncpg 可用的异步 URL。
+
+    处理三个最常见的部署坑：
+    1. postgres:// / postgresql://  ->  postgresql+asyncpg://（换异步驱动）
+    2. ?sslmode=require            ->  ?ssl=require（asyncpg 用 ssl，不认 sslmode）
+    3. 丢弃 libpq 专用参数（channel_binding 等），并默认补上 TLS
+    """
+    if not url:
+        return url
+
+    cleaned = url.strip().strip(chr(34)).strip(chr(39))
+
+    for prefix in ("postgres://", "postgresql://"):
+        if cleaned.startswith(prefix):
+            cleaned = "postgresql+asyncpg://" + cleaned[len(prefix):]
+            break
+
+    is_async_pg = cleaned.startswith("postgresql+asyncpg://")
+    has_ssl = False
+
+    if "?" in cleaned:
+        base, query = cleaned.split("?", 1)
+        kept: list[str] = []
+        for item in query.split("&"):
+            if not item:
+                continue
+            key = item.split("=", 1)[0].lower()
+            if key in _DROP_QUERY_KEYS:
+                continue
+            if key in {"sslmode", "ssl"}:
+                value = item.split("=", 1)[1] if "=" in item else "require"
+                if value.lower().startswith("verify"):
+                    value = "verify-full"
+                elif value.lower() in {"require", "prefer", "allow"}:
+                    value = "require"
+                kept.append("ssl=" + value)
+                has_ssl = True
+                continue
+            kept.append(item)
+        cleaned = base + ("?" + "&".join(kept) if kept else "")
+
+    if is_async_pg and not has_ssl:
+        cleaned += ("&" if "?" in cleaned else "?") + "ssl=require"
+
+    return cleaned
+
 
 class Settings(BaseSettings):
     """Typed, validated application configuration."""
@@ -108,7 +159,7 @@ class Settings(BaseSettings):
     def sqlalchemy_url(self) -> str:
         """Async SQLAlchemy URL. Set DATABASE_URL to migrate to PostgreSQL."""
         if self.database_url:
-            return self.database_url
+            return normalize_database_url(self.database_url)
         db_path = Path(self.data_dir) / "database.db"
         return "sqlite+aiosqlite:///" + db_path.as_posix()
 

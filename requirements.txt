@@ -16,7 +16,10 @@ streamlit>=1.39,<2
 # ---- 后端 Service 层所需（不含 fastapi）----
 sqlalchemy>=2.0.30,<3
 greenlet>=3.0,<4
+# 本地 SQLite
 aiosqlite>=0.19,<1
+# 云 PostgreSQL（Neon / Supabase 免费档）异步驱动
+asyncpg>=0.29,<1
 pydantic>=2.7,<3
 pydantic-settings>=2.2,<3
 httpx>=0.27,<1

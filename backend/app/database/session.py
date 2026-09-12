@@ -12,15 +12,22 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config.settings import settings
 
 connect_args: dict = {}
+engine_kwargs: dict = {
+    "echo": settings.sql_echo,
+    "future": True,
+    "pool_pre_ping": True,
+}
 if settings.is_sqlite:
     connect_args = {"check_same_thread": False}
+else:
+    # 云 Postgres（Neon / Supabase）空闲后会挂起计算实例，
+    # 定期回收连接 + pre_ping 可以避免拿到失效连接。
+    engine_kwargs["pool_recycle"] = 300
 
 engine = create_async_engine(
     settings.sqlalchemy_url,
-    echo=settings.sql_echo,
-    future=True,
-    pool_pre_ping=True,
     connect_args=connect_args,
+    **engine_kwargs,
 )
 
 if settings.is_sqlite:

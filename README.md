@@ -463,7 +463,17 @@ AI 圆桌、记忆系统、跨用户数据隔离、上传安全（扩展名 / �
 - **任务队列**：大文件批处理 / 长任务可在 `RagService.ingest` 之外接入 Celery。
 - **向量库**：当前为 SQLite + JSON 向量 + Python 余弦相似度，适合 100 用户量级；数据量大时换 pgvector / Milvus，只需改 Repository 与 embedding 存储列。
 
-### 迁移到 PostgreSQL
+### 迁移到 PostgreSQL（本地或云端）
+
+连接串**直接粘平台给的原样即可**，代码会自动规范化（`postgres://` -> `postgresql+asyncpg://`、`sslmode` -> `ssl`、丢弃 libpq 专用参数并补 TLS）：
+
+``
+DATABASE_URL=postgresql://user:pass@ep-xxx-pooler.region.aws.neon.tech/neondb?sslmode=require
+``
+
+云端免费档接入步骤见 `DEPLOY_FREE.md`「接入免费云数据库（Neon）」。
+
+### 迁移到 PostgreSQL（旧说明）
 
 ```
 pip install asyncpg

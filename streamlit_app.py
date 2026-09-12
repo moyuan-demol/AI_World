@@ -529,6 +529,9 @@ def sidebar(user_id: int, username: str) -> str:
             st.warning("离线演示模式：回答为本地占位内容")
         st.write("模型：" + active_model_name())
         st.write("文本向量：" + active_embedding_label())
+        st.write(
+            "数据库：" + ("PostgreSQL（云端，长期保留）" if not settings.is_sqlite else "SQLite（本地文件）")
+        )
 
         with st.expander("🧠 使用我自己的向量服务（可选，提升检索质量）"):
             st.caption(
