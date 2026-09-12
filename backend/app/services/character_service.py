@@ -101,10 +101,8 @@ class CharacterService:
     async def knowledge_map(self, user_id: int) -> dict[int, list[int]]:
         """一次性取出该用户所有角色的绑定关系（给列表页用，避免 N+1 查询）。"""
         characters = await self.characters.list_by_user(user_id)
-        return {
-            character.id: await self.bindings.list_knowledge_ids(character.id)
-            for character in characters
-        }
+        # 一次查询取回全部绑定（原来每个角色查一次 → N+1）
+        return await self.bindings.map_by_characters([character.id for character in characters])
 
     async def count(self, user_id: int) -> int:
         return await self.characters.count_by_user(user_id)

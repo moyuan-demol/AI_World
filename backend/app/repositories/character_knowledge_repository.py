@@ -15,6 +15,20 @@ class CharacterKnowledgeRepository(BaseRepository[CharacterKnowledge]):
         )
         return [int(item) for item in result.scalars().all()]
 
+    async def map_by_characters(self, character_ids: list[int]) -> dict[int, list[int]]:
+        """一次查询取回多个角色的绑定关系（替代逐个角色查询）。"""
+        if not character_ids:
+            return {}
+        result = await self.session.execute(
+            select(CharacterKnowledge.character_id, CharacterKnowledge.knowledge_id).where(
+                CharacterKnowledge.character_id.in_(character_ids)
+            )
+        )
+        mapping: dict[int, list[int]] = {}
+        for character_id, knowledge_id in result.all():
+            mapping.setdefault(int(character_id), []).append(int(knowledge_id))
+        return mapping
+
     async def replace(self, character_id: int, knowledge_ids: list[int]) -> list[int]:
         """整体替换绑定关系（幂等）。"""
         await self.session.execute(

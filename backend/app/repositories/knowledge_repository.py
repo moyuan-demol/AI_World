@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.models.knowledge import KnowledgeBase
 from app.repositories.base import BaseRepository
@@ -46,6 +46,15 @@ class KnowledgeRepository(BaseRepository[KnowledgeBase]):
             result.append(current)
             stack.extend(children.get(current, []))
         return result
+
+    async def delete_by_ids(self, knowledge_ids: list[int]) -> int:
+        """一条语句删除多个节点（用于级联删除整棵子树）。"""
+        if not knowledge_ids:
+            return 0
+        result = await self.session.execute(
+            delete(KnowledgeBase).where(KnowledgeBase.id.in_(knowledge_ids))
+        )
+        return int(result.rowcount or 0)
 
     async def count_by_user(self, user_id: int) -> int:
         result = await self.session.execute(

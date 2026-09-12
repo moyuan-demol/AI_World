@@ -61,11 +61,9 @@ class KnowledgeService:
 
     async def list(self, user_id: int) -> list[KnowledgeOut]:
         bases = await self.knowledge.list_by_user(user_id)
-        result: list[KnowledgeOut] = []
-        for base in bases:
-            count = await self.documents.count_by_knowledge(base.id)
-            result.append(self._to_out(base, count))
-        return result
+        # 一次聚合查询拿到所有切片数（原来每个知识库查一次 → N+1）
+        counts = await self.documents.count_map([base.id for base in bases])
+        return [self._to_out(base, counts.get(base.id, 0)) for base in bases]
 
     async def get(self, user_id: int, knowledge_id: int) -> KnowledgeBase:
         base = await self.knowledge.get_for_user(knowledge_id, user_id)
@@ -87,11 +85,9 @@ class KnowledgeService:
         """删除该节点**及其整棵子树**（文档一并清理）。"""
         base = await self.get(user_id, knowledge_id)
         ids = await self.knowledge.list_descendant_ids(user_id, [base.id])
-        for item in ids:
-            await self.documents.delete_by_knowledge(item)
-            node = await self.knowledge.get(item)
-            if node is not None:
-                await self.knowledge.delete(node)
+        # 两条批量语句搞定整棵子树：云端往返从 N 次降到 2 次（删除瞬间完成）
+        await self.documents.delete_by_knowledge_ids(ids)
+        await self.knowledge.delete_by_ids(ids)
         await self.session.commit()
 
     async def list_documents(self, user_id: int, knowledge_id: int, limit: int = 200) -> list[Document]:

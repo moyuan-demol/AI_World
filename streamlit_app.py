@@ -56,7 +56,9 @@ def _load_streamlit_secrets_into_env() -> dict:
     return report
 
 
+@st.cache_resource(show_spinner=False)
 def _pick_writable_data_dir() -> Path:
+    """只做一次：原来每次脚本重跑都会写一个临时文件再删（无谓的磁盘 IO）。"""
     preferred = ROOT_DIR / "data"
     try:
         preferred.mkdir(parents=True, exist_ok=True)
@@ -201,6 +203,15 @@ def _character_dict(row) -> dict:
     }
 
 
+def invalidate_lists() -> None:
+    """任何写操作后清一次缓存，保证立刻看到最新数据。"""
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+
+@st.cache_data(ttl=5, show_spinner=False)
 def api_list_characters(user_id: int) -> list[dict]:
     async def handler(session):
         rows = await CharacterService(session).list(user_id)
@@ -213,6 +224,7 @@ def api_create_character(user_id: int, payload: CharacterCreate) -> dict:
     async def handler(session):
         row = await CharacterService(session).create(user_id, payload)
         return _character_dict(row)
+        invalidate_lists()
 
     return db_call(handler)
 
@@ -220,6 +232,7 @@ def api_create_character(user_id: int, payload: CharacterCreate) -> dict:
 def api_delete_character(user_id: int, character_id: int) -> None:
     async def handler(session):
         await CharacterService(session).delete(user_id, character_id)
+        invalidate_lists()
 
     db_call(handler)
 
@@ -254,6 +267,7 @@ def api_set_character_knowledge(
     return db_call(handler)
 
 
+@st.cache_data(ttl=5, show_spinner=False)
 def api_knowledge_map(user_id: int) -> dict:
     async def handler(session):
         return await CharacterService(session).knowledge_map(user_id)
@@ -261,6 +275,7 @@ def api_knowledge_map(user_id: int) -> dict:
     return db_call(handler)
 
 
+@st.cache_data(ttl=5, show_spinner=False)
 def api_list_knowledge(user_id: int) -> list[dict]:
     async def handler(session):
         rows = await KnowledgeService(session).list(user_id)
@@ -283,6 +298,7 @@ def api_create_knowledge(user_id: int, name: str, description: str, parent_id=No
             user_id,
             KnowledgeCreate(name=name, description=description, parent_id=parent_id),
         )
+        invalidate_lists()
         return {"id": row.id, "name": row.name, "document_count": row.document_count}
 
     return db_call(handler)
@@ -291,6 +307,7 @@ def api_create_knowledge(user_id: int, name: str, description: str, parent_id=No
 def api_delete_knowledge(user_id: int, knowledge_id: int) -> None:
     async def handler(session):
         await KnowledgeService(session).delete(user_id, knowledge_id)
+        invalidate_lists()
 
     db_call(handler)
 
