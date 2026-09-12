@@ -273,10 +273,11 @@ def login_gate() -> int | None:
                     st.error(redact_credentials(type(exc).__name__ + ": " + str(exc)))
 
     st.divider()
-    st.caption("⚠️ 下面是**公共体验账号**：所有人共用同一份数据，任何人都能删改里面的内容，请勿存放重要资料。")
-    if st.button("🎮 一键体验 Demo（公共沙盒）"):
-        st.session_state.update(**api_demo_login())
-        st.rerun()
+    st.caption(
+        "🔒 本应用为**多用户隔离**：请注册你自己的账号 —— "
+        "你的知识库、AI 伙伴与对话记录**只有你自己**能看到和修改。"
+    )
+    st.caption("（公共体验账号已关闭，避免不同访客互相删改数据。）")
     return None
 
 
