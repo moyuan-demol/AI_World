@@ -58,6 +58,7 @@ class AIClient:
         max_tokens: int | None = None,
         model: str | None = None,
         offline_fallback: Callable[[], str] | None = None,
+        _retry: bool = False,
     ) -> AIResult:
         if not self.is_configured:
             text = offline_fallback() if offline_fallback else self._default_offline_text(messages)
@@ -90,10 +91,38 @@ class AIClient:
         choices = data.get("choices") or []
         if not choices:
             raise AIUnavailableError("DeepSeek 未返回任何候选结果")
-        text = (choices[0].get("message") or {}).get("content") or ""
-        text = text.strip()
+
+        choice = choices[0]
+        message = choice.get("message") or {}
+        text = (message.get("content") or "").strip()
+
+        # 兜底 1：思考型模型可能把内容放在 reasoning_content
+        if not text and (message.get("reasoning_content") or "").strip():
+            logger.warning("正文为空，改用 reasoning_content（可能是思考型模型）")
+            text = str(message["reasoning_content"]).strip()
+
+        # 兜底 2：思考过程吃光了 max_tokens —— 用更大的上限重试一次
+        if not text and not _retry:
+            boosted = max((max_tokens or settings.ai_max_tokens) * 3, 4096)
+            logger.warning("返回空内容（finish_reason=%s），以 max_tokens=%s 重试一次", choice.get("finish_reason"), boosted)
+            return await self.chat(
+                messages,
+                temperature=temperature,
+                max_tokens=boosted,
+                model=model,
+                offline_fallback=offline_fallback,
+                _retry=True,
+            )
+
         if not text:
-            raise AIUnavailableError("DeepSeek 返回了空内容")
+            finish = str(choice.get("finish_reason") or "unknown")
+            usage = data.get("usage") or {}
+            raise AIUnavailableError(
+                "模型返回空内容（finish_reason=" + finish
+                + "，completion_tokens=" + str(usage.get("completion_tokens", "?")) + "）。"
+                "常见原因：思考型模型把输出配额用于推理 —— 请调大 AI_MAX_TOKENS，"
+                "或改用非思考模型（如 deepseek-v4-flash 且不开启 thinking）。"
+            )
         return AIResult(text=text, model=data.get("model") or payload["model"])
 
     @staticmethod
