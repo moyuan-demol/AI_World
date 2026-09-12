@@ -114,6 +114,7 @@ os.environ.setdefault("UPLOAD_DIR", str(DATA_DIR / "uploads"))
 
 from app.ai.deepseek_client import AIClient  # noqa: E402
 from app.rag.embedding import EmbeddingConfig  # noqa: E402
+from app.tools.web_search import PROVIDER_CLASSES, WebSearchTool  # noqa: E402
 from app.config.settings import settings  # noqa: E402
 from app.core.files import sanitize_filename, validate_signature  # noqa: E402
 from app.database.init_db import init_db  # noqa: E402
@@ -352,6 +353,8 @@ def api_chat(
     ai_client: AIClient | None = None,
     embedding_config=None,
     rag_mode: str = "single",
+    use_web: bool = False,
+    search_tool: WebSearchTool | None = None,
 ) -> dict:
     async def handler(session):
         payload = ChatRequest(
@@ -361,9 +364,13 @@ def api_chat(
             knowledge_id=knowledge_id,
             use_knowledge=use_knowledge,
             rag_mode=rag_mode,
+            use_web=use_web,
         )
         result = await ChatService(
-            session, ai_client=ai_client, embedding_config=embedding_config
+            session,
+            ai_client=ai_client,
+            embedding_config=embedding_config,
+            search_tool=search_tool,
         ).chat(user_id, payload)
         return {
             "answer": result.answer,
@@ -378,6 +385,7 @@ def api_chat(
             "sub_questions": result.sub_questions,
             "evidence": result.evidence,
             "rounds": result.rounds,
+            "web_reports": result.web_reports,
         }
 
     return db_call(handler)
@@ -527,6 +535,18 @@ def session_embedding_config() -> EmbeddingConfig | None:
     return EmbeddingConfig(provider="openai", api_base=base, api_key=key, model=model)
 
 
+def session_search_tool() -> WebSearchTool | None:
+    """访客在侧边栏开启联网检索时，返回一个检索工具；否则 None。"""
+    if not st.session_state.get("web_enabled"):
+        return None
+    names = st.session_state.get("web_providers") or settings.search_provider_list
+    return WebSearchTool(
+        list(names),
+        api_key=(st.session_state.get("web_key") or settings.search_api_key),
+        base_url=(st.session_state.get("web_base") or settings.search_base_url),
+    )
+
+
 def active_embedding_label() -> str:
     return (session_embedding_config() or EmbeddingConfig.from_settings()).label
 
@@ -668,6 +688,32 @@ def sidebar(user_id: int, username: str) -> str:
             st.caption(
                 "⚠️ 不同向量模型的空间不可比：切换后请重新上传文件，否则旧文档检索会失效。"
             )
+
+        with st.expander("🌐 联网检索（外部世界接口）"):
+            st.caption(
+                "开启后，提问会**同时检索外部资料**（作为补充证据），"
+                "与知识库片段一起送进模型；两者都会出现在「引用来源」里。"
+                "⚠️ 检索在**应用服务器所在网络**发起（部署在美国 → 维基可达；"
+                "部署到国内服务器请改用 SearXNG / Tavily / Serper）。"
+            )
+            st.checkbox("启用联网检索", key="web_enabled")
+            if st.session_state.get("web_enabled"):
+                label_to_name = {
+                    cls.label + "（" + name + "）": name for name, cls in PROVIDER_CLASSES.items()
+                }
+                default_names = settings.search_provider_list
+                defaults = [
+                    label for label, name in label_to_name.items() if name in default_names
+                ]
+                st.multiselect(
+                    "检索来源（按顺序优先，并行执行）",
+                    list(label_to_name.keys()),
+                    default=defaults or list(label_to_name.keys())[:1],
+                    key="web_providers",
+                )
+                st.text_input("API Key（Tavily / Serper 等需要时填）", type="password", key="web_key")
+                st.text_input("SearXNG 实例地址（可选）", key="web_base", placeholder="https://searx.example.com")
+                st.caption("单个来源超时会自动跳过，不会阻塞回答；失败原因会显示在回答下方。")
 
         with st.expander("❓ 什么是「文本向量」"):
             st.caption(
@@ -982,6 +1028,8 @@ def page_chat(user_id: int) -> None:
                         session_ai_client(),
                         session_embedding_config(),
                         "multi" if multi_agent else "single",
+                        bool(st.session_state.get("web_enabled")),
+                        session_search_tool(),
                     )
                 except Exception as error:
                     record_usage(
@@ -1017,6 +1065,16 @@ def page_chat(user_id: int) -> None:
                             st.caption("拆解出的子问题：" + "；".join(result["sub_questions"]))
                         if result.get("evidence"):
                             st.caption("证据审查结论：" + result["evidence"])
+                if result.get("web_reports"):
+                    detail = "｜".join(
+                        (
+                            "✅ " + str(item.get("provider")) + " " + str(item.get("count")) + " 条"
+                            if item.get("ok")
+                            else "❌ " + str(item.get("provider")) + " " + str(item.get("error"))[:40]
+                        )
+                        for item in result["web_reports"]
+                    )
+                    st.caption("🌐 联网检索：" + detail)
                 if result["sources"]:
                     st.caption("引用来源：" + "；".join(result["sources"]))
                 if result["offline"]:

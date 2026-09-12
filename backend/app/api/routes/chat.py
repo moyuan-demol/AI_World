@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query, status
 
 from app.api.deps import AiLimit, CurrentUser, SessionDep
 from app.schemas.chat import ChatRequest, ChatResponse, ConversationOut, MessageOut
+from app.tools.web_search import WebSearchTool
 from app.services.chat_service import ChatService
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -11,7 +12,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 @router.post("", response_model=ChatResponse, summary="与 AI 伙伴对话（自动检索知识库）")
 async def chat(payload: ChatRequest, session: SessionDep, user: CurrentUser, _: AiLimit) -> ChatResponse:
-    return await ChatService(session).chat(user.id, payload)
+    return await ChatService(session, search_tool=WebSearchTool()).chat(user.id, payload)
 
 
 @router.get("/conversations", response_model=list[ConversationOut], summary="会话列表")

@@ -13,6 +13,8 @@ class ChatRequest(BaseModel):
     use_knowledge: bool = True
     # single = 原有单轮 RAG；multi = 多 Agent 协作（拆解→查找→审查→整理）
     rag_mode: str = "single"
+    # 是否同时检索外部世界（维基百科 / DuckDuckGo / SearXNG / Tavily …）
+    use_web: bool = False
 
 
 class SourceOut(BaseModel):
@@ -41,6 +43,8 @@ class ChatResponse(BaseModel):
     sub_questions: list[str] = []
     evidence: str = ""
     rounds: int = 1
+    # 联网检索状态（哪个 provider 成功/失败/耗时），供界面如实展示
+    web_reports: list[dict] = []
 
 
 class MessageOut(ORMModel):

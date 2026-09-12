@@ -112,6 +112,17 @@ class Settings(BaseSettings):
     memory_auto_extract: bool = True        # 自动事实抽取
     memory_extract_every: int = 6           # 每 N 条消息触发一次抽取
 
+    # ---- 外部世界接口（联网检索）----
+    # 注意：检索在**应用所在网络**发起（部署在美国服务器 → 维基可达；
+    # 部署到国内服务器 → 请改用 searxng / tavily / serper）
+    search_enabled: bool = False
+    search_providers: str = "wikipedia,duckduckgo"
+    search_timeout_seconds: float = 8.0
+    search_results_per_provider: int = 3
+    search_max_results: int = 6
+    search_api_key: str = ""
+    search_base_url: str = ""
+
     # ---- 多 Agent RAG（拆解 / 查找 / 审查 / 整理）----
     multi_agent_enabled: bool = True
     multi_agent_max_rounds: int = 2   # 审查-补检的最大轮次（有界，防费用失控）
@@ -174,6 +185,10 @@ class Settings(BaseSettings):
     @property
     def resolved_backup_dir(self) -> str:
         return self.backup_dir or str(Path(self.data_dir) / "backups")
+
+    @property
+    def search_provider_list(self) -> list[str]:
+        return [item.strip() for item in self.search_providers.split(",") if item.strip()]
 
     @property
     def admin_username_list(self) -> list[str]:

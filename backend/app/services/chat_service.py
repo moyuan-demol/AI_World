@@ -9,14 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.deepseek_client import AIClient, get_ai_client
 from app.ai.offline import offline_chat_answer
-from app.ai.prompts import build_character_system_prompt, build_rag_user_message
+from app.ai.prompts import build_character_system_prompt, build_context_block, build_rag_user_message
 from app.config.settings import settings
 from app.core.errors import NotFoundError
 from app.models.chat import Conversation, Message
 from app.rag.embedding import EmbeddingConfig, embed_query
 from app.rag.multi_agent import MultiAgentRag
 from app.rag.rag_service import RagService
-from app.rag.retriever import cosine_similarity
+from app.rag.retriever import RetrievedChunk, cosine_similarity
+from app.tools.web_search import WebSearchTool
 from app.repositories.character_repository import CharacterRepository
 from app.repositories.character_knowledge_repository import CharacterKnowledgeRepository
 from app.repositories.chat_repository import ConversationRepository, MessageRepository
@@ -52,8 +53,10 @@ class ChatService:
         session: AsyncSession,
         ai_client: AIClient | None = None,
         embedding_config: EmbeddingConfig | None = None,
+        search_tool: WebSearchTool | None = None,
     ) -> None:
         self.session = session
+        self.search_tool = search_tool
         self.characters = CharacterRepository(session)
         self.conversations = ConversationRepository(session)
         self.messages = MessageRepository(session)
@@ -87,6 +90,12 @@ class ChatService:
                 knowledge_id=payload.knowledge_id,
                 knowledge_ids=scoped_ids or None,
             )
+
+        # 外部世界接口：把网页资料并入上下文（失败会自动降级，不阻塞回答）
+        web_chunks, web_reports = await self._fetch_web(payload.message, payload.use_web)
+        if web_chunks:
+            chunks = list(chunks) + web_chunks
+            context_block = build_context_block(chunks)[: settings.max_context_chars]
 
         system_prompt = build_character_system_prompt(character)
 
@@ -175,7 +184,42 @@ class ChatService:
             model=result.model,
             offline=result.offline,
             sources=sources,
+            web_reports=web_reports,
         )
+
+    async def _fetch_web(
+        self, query: str, enabled: bool
+    ) -> tuple[list[RetrievedChunk], list[dict]]:
+        """调用外部检索；任何失败都降级为空结果，并如实报告状态。
+
+        返回的网页资料被包装成伪 RetrievedChunk（document_id 为负数），
+        这样能和知识库片段一起进入上下文与"引用来源"。
+        """
+        if not enabled or self.search_tool is None or not self.search_tool.enabled:
+            return [], []
+        outcome = await self.search_tool.search(query)
+        chunks = [
+            RetrievedChunk(
+                document_id=-(index + 1),
+                knowledge_id=0,
+                filename="🌐 " + item.provider + " · " + (item.title or item.url)[:60],
+                chunk_index=0,
+                content=(item.snippet or item.title) + "\n链接：" + item.url,
+                score=0.0,
+            )
+            for index, item in enumerate(outcome.results)
+        ]
+        reports = [
+            {
+                "provider": report.provider,
+                "ok": report.ok,
+                "count": report.count,
+                "error": report.error,
+                "elapsed_ms": report.elapsed_ms,
+            }
+            for report in outcome.reports
+        ]
+        return chunks, reports
 
     async def _memory_block(self, user_id: int, character_id: int) -> str:
         """把长期记忆注入 system prompt（角色专属 + 全局，按最近写入取有限条）。"""
@@ -230,6 +274,10 @@ class ChatService:
         )
         result = await pipeline.run(payload.message)
 
+        web_chunks, web_reports = await self._fetch_web(payload.message, payload.use_web)
+        if web_chunks:
+            result.sources = list(result.sources) + web_chunks
+
         sources = [
             SourceOut(
                 document_id=chunk.document_id,
@@ -278,6 +326,7 @@ class ChatService:
             sub_questions=result.sub_questions,
             evidence=result.review_reason,
             rounds=result.rounds,
+            web_reports=web_reports,
         )
 
     async def _refresh_summary(self, conversation: Conversation, user_id: int) -> str:
