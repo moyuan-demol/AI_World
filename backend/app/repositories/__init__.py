@@ -1,4 +1,5 @@
 from app.repositories.base import BaseRepository
+from app.repositories.character_knowledge_repository import CharacterKnowledgeRepository
 from app.repositories.character_repository import CharacterRepository
 from app.repositories.chat_repository import ConversationRepository, MessageRepository
 from app.repositories.document_repository import DocumentRepository
@@ -9,6 +10,7 @@ from app.repositories.user_repository import UserRepository
 
 __all__ = [
     "BaseRepository",
+    "CharacterKnowledgeRepository",
     "CharacterRepository",
     "ConversationRepository",
     "DocumentRepository",

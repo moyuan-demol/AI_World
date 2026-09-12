@@ -66,12 +66,14 @@ class RagService:
         user_id: int,
         query: str,
         knowledge_id: int | None = None,
+        knowledge_ids: list[int] | None = None,
         top_k: int | None = None,
     ) -> list[RetrievedChunk]:
         return await self.retriever.search(
             user_id,
             query,
             knowledge_id=knowledge_id,
+            knowledge_ids=knowledge_ids,
             top_k=top_k,
         )
 
@@ -81,12 +83,14 @@ class RagService:
         user_id: int,
         query: str,
         knowledge_id: int | None = None,
+        knowledge_ids: list[int] | None = None,
         top_k: int | None = None,
     ) -> tuple[str, list[RetrievedChunk]]:
         chunks = await self.retrieve(
             user_id=user_id,
             query=query,
             knowledge_id=knowledge_id,
+            knowledge_ids=knowledge_ids,
             top_k=top_k,
         )
         context = build_context_block(chunks)

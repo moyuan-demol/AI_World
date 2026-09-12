@@ -50,14 +50,26 @@ class Retriever:
         self.documents = DocumentRepository(session)
         self.knowledge = KnowledgeRepository(session)
 
-    async def _resolve_knowledge_ids(self, user_id: int, knowledge_id: int | None) -> list[int]:
+    async def _resolve_knowledge_ids(
+        self,
+        user_id: int,
+        knowledge_id: int | None,
+        knowledge_ids: list[int] | None = None,
+    ) -> list[int]:
+        """确定检索范围（永远限定在该用户自己的知识库内）。
+
+        优先级：显式指定单个 knowledge_id > 传入的 knowledge_ids（角色知识边界）
+                > 该用户的全部知识库
+        """
+        owned = {base.id for base in await self.knowledge.list_by_user(user_id)}
         if knowledge_id is not None:
-            base = await self.knowledge.get_for_user(knowledge_id, user_id)
-            if base is None:
+            if knowledge_id not in owned:
                 raise NotFoundError("知识库不存在或无权访问")
-            return [base.id]
-        bases = await self.knowledge.list_by_user(user_id)
-        return [base.id for base in bases]
+            return [knowledge_id]
+        if knowledge_ids:
+            scoped = [item for item in knowledge_ids if item in owned]
+            return scoped
+        return list(owned)
 
     async def search(
         self,
@@ -65,14 +77,15 @@ class Retriever:
         query: str,
         *,
         knowledge_id: int | None = None,
+        knowledge_ids: list[int] | None = None,
         top_k: int | None = None,
     ) -> list[RetrievedChunk]:
         if not query or not query.strip():
             return []
-        knowledge_ids = await self._resolve_knowledge_ids(user_id, knowledge_id)
-        if not knowledge_ids:
+        scoped_ids = await self._resolve_knowledge_ids(user_id, knowledge_id, knowledge_ids)
+        if not scoped_ids:
             return []
-        documents: list[Document] = await self.documents.list_by_knowledge_ids(knowledge_ids)
+        documents: list[Document] = await self.documents.list_by_knowledge_ids(scoped_ids)
         if not documents:
             return []
 

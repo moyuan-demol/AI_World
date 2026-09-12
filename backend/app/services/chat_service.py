@@ -18,6 +18,7 @@ from app.rag.multi_agent import MultiAgentRag
 from app.rag.rag_service import RagService
 from app.rag.retriever import cosine_similarity
 from app.repositories.character_repository import CharacterRepository
+from app.repositories.character_knowledge_repository import CharacterKnowledgeRepository
 from app.repositories.chat_repository import ConversationRepository, MessageRepository
 from app.repositories.memory_repository import MemoryRepository
 from app.schemas.chat import AgentStepOut, ChatRequest, ChatResponse, SourceOut
@@ -57,6 +58,7 @@ class ChatService:
         self.conversations = ConversationRepository(session)
         self.messages = MessageRepository(session)
         self.memories = MemoryRepository(session)
+        self.bindings = CharacterKnowledgeRepository(session)
         self.rag = RagService(session, embedding_config)
         self.ai = ai_client or get_ai_client()
         self.embedding_config = embedding_config
@@ -73,6 +75,9 @@ class ChatService:
         if payload.rag_mode == "multi" and settings.multi_agent_enabled:
             return await self._chat_with_agents(user_id, payload, character, conversation)
 
+        # 角色知识边界：绑定了知识库就只检索绑定的那些（身份隔离）
+        scoped_ids = await self.bindings.list_knowledge_ids(character.id)
+
         context_block = ""
         chunks = []
         if payload.use_knowledge:
@@ -80,6 +85,7 @@ class ChatService:
                 user_id=user_id,
                 query=payload.message,
                 knowledge_id=payload.knowledge_id,
+                knowledge_ids=scoped_ids or None,
             )
 
         system_prompt = build_character_system_prompt(character)
@@ -203,6 +209,8 @@ class ChatService:
         if summary:
             system_prompt = system_prompt + "\n\n[此前对话摘要]\n" + summary
 
+        scoped_ids = await self.bindings.list_knowledge_ids(character.id)
+
         async def retrieve(query: str):
             if not payload.use_knowledge:
                 return []
@@ -210,6 +218,7 @@ class ChatService:
                 user_id=user_id,
                 query=query,
                 knowledge_id=payload.knowledge_id,
+                knowledge_ids=scoped_ids or None,
                 top_k=settings.multi_agent_top_k,
             )
 

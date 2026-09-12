@@ -6,7 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import NotFoundError
 from app.models.character import Character
+from app.repositories.character_knowledge_repository import CharacterKnowledgeRepository
 from app.repositories.character_repository import CharacterRepository
+from app.repositories.knowledge_repository import KnowledgeRepository
 from app.schemas.character import CharacterCreate, CharacterUpdate
 
 DEFAULT_CHARACTERS: list[dict[str, str]] = [
@@ -41,6 +43,8 @@ class CharacterService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.characters = CharacterRepository(session)
+        self.bindings = CharacterKnowledgeRepository(session)
+        self.knowledge = KnowledgeRepository(session)
 
     async def create(self, user_id: int, payload: CharacterCreate) -> Character:
         character = await self.characters.create(
@@ -74,8 +78,33 @@ class CharacterService:
 
     async def delete(self, user_id: int, character_id: int) -> None:
         character = await self.get(user_id, character_id)
+        await self.bindings.delete_by_character(character.id)
         await self.characters.delete(character)
         await self.session.commit()
+
+    # ---- 知识边界：角色 ↔ 知识库 绑定 ---------------------------------- #
+    async def knowledge_ids(self, user_id: int, character_id: int) -> list[int]:
+        character = await self.get(user_id, character_id)
+        return await self.bindings.list_knowledge_ids(character.id)
+
+    async def set_knowledge_ids(
+        self, user_id: int, character_id: int, knowledge_ids: list[int]
+    ) -> list[int]:
+        """整体替换角色绑定的知识库。只会绑定属于该用户自己的知识库。"""
+        character = await self.get(user_id, character_id)
+        owned = {base.id for base in await self.knowledge.list_by_user(user_id)}
+        safe_ids = [item for item in knowledge_ids if item in owned]
+        result = await self.bindings.replace(character.id, safe_ids)
+        await self.session.commit()
+        return result
+
+    async def knowledge_map(self, user_id: int) -> dict[int, list[int]]:
+        """一次性取出该用户所有角色的绑定关系（给列表页用，避免 N+1 查询）。"""
+        characters = await self.characters.list_by_user(user_id)
+        return {
+            character.id: await self.bindings.list_knowledge_ids(character.id)
+            for character in characters
+        }
 
     async def count(self, user_id: int) -> int:
         return await self.characters.count_by_user(user_id)

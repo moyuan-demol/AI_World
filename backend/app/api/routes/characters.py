@@ -1,6 +1,7 @@
 """AI companion endpoints. Every query is scoped to the current user."""
 
 from fastapi import APIRouter, status
+from pydantic import BaseModel
 
 from app.api.deps import CurrentUser, SessionDep, WriteLimit
 from app.schemas.character import CharacterCreate, CharacterOut, CharacterUpdate
@@ -42,6 +43,38 @@ async def update_character(
 ) -> CharacterOut:
     character = await CharacterService(session).update(user.id, character_id, payload)
     return CharacterOut.model_validate(character)
+
+
+class CharacterKnowledgeUpdate(BaseModel):
+    knowledge_ids: list[int] = []
+
+
+@router.get(
+    "/{character_id}/knowledge",
+    response_model=list[int],
+    summary="角色的知识边界（绑定的知识库）",
+)
+async def get_character_knowledge(
+    character_id: int, session: SessionDep, user: CurrentUser
+) -> list[int]:
+    return await CharacterService(session).knowledge_ids(user.id, character_id)
+
+
+@router.put(
+    "/{character_id}/knowledge",
+    response_model=list[int],
+    summary="设置角色的知识边界（只检索这些知识库）",
+)
+async def set_character_knowledge(
+    character_id: int,
+    payload: CharacterKnowledgeUpdate,
+    session: SessionDep,
+    user: CurrentUser,
+    _: WriteLimit,
+) -> list[int]:
+    return await CharacterService(session).set_knowledge_ids(
+        user.id, character_id, payload.knowledge_ids
+    )
 
 
 @router.delete("/{character_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除 AI 伙伴")

@@ -235,6 +235,31 @@ def api_ensure_default_characters(user_id: int) -> int:
     return db_call(handler)
 
 
+def api_character_knowledge(user_id: int, character_id: int) -> list[int]:
+    async def handler(session):
+        return await CharacterService(session).knowledge_ids(user_id, character_id)
+
+    return db_call(handler)
+
+
+def api_set_character_knowledge(
+    user_id: int, character_id: int, knowledge_ids: list[int]
+) -> list[int]:
+    async def handler(session):
+        return await CharacterService(session).set_knowledge_ids(
+            user_id, character_id, knowledge_ids
+        )
+
+    return db_call(handler)
+
+
+def api_knowledge_map(user_id: int) -> dict:
+    async def handler(session):
+        return await CharacterService(session).knowledge_map(user_id)
+
+    return db_call(handler)
+
+
 def api_list_knowledge(user_id: int) -> list[dict]:
     async def handler(session):
         rows = await KnowledgeService(session).list(user_id)
@@ -708,11 +733,23 @@ def page_dashboard(user_id: int) -> None:
             st.caption("还没有知识库，去「知识世界」上传文件。")
 
 
+def kb_choices(user_id: int) -> dict:
+    """知识库选择项：{显示名: id}。"""
+    return {
+        item["name"] + "（#" + str(item["id"]) + "）": item["id"]
+        for item in api_list_knowledge(user_id)
+    }
+
+
 def page_characters(user_id: int) -> None:
     st.title("AI 伙伴")
-    st.caption("定义身份、人格、专长与说话方式，作为对话和圆桌的 System Prompt。")
+    st.caption(
+        "定义身份、人格、专长与说话方式，并可为每个角色划定**专属知识边界**，"
+        "避免不同身份共用同一知识池。"
+    )
 
     characters = api_list_characters(user_id)
+    options = kb_choices(user_id)
 
     with st.expander("➕ 新建 AI 伙伴", expanded=not characters):
         with st.form("create_character", clear_on_submit=True):
@@ -724,12 +761,17 @@ def page_characters(user_id: int) -> None:
             style = col4.text_input("说话方式", placeholder="例如：专业、先结论后依据")
             expertise = st.text_area("擅长领域", placeholder="例如：医疗 AI、临床决策支持", height=70)
             system_prompt = st.text_area("补充 System Prompt", placeholder="约束回答边界，例如：不替代执业医师诊断", height=70)
+            chosen_kbs = st.multiselect(
+                "知识边界（只检索这些知识库；不选 = 检索你的全部知识库）",
+                list(options.keys()),
+                help="给每个角色划定专属知识范围，避免不同身份互相串味。",
+            )
             submitted = st.form_submit_button("创建", type="primary")
         if submitted:
             if not name.strip():
                 st.error("名称不能为空")
             else:
-                api_create_character(
+                created = api_create_character(
                     user_id,
                     CharacterCreate(
                         name=name.strip(),
@@ -740,6 +782,10 @@ def page_characters(user_id: int) -> None:
                         system_prompt=system_prompt,
                     ),
                 )
+                if chosen_kbs:
+                    api_set_character_knowledge(
+                        user_id, created["id"], [options[item] for item in chosen_kbs]
+                    )
                 st.success("已创建：" + name)
                 st.rerun()
 
@@ -748,6 +794,7 @@ def page_characters(user_id: int) -> None:
         st.info("还没有 AI 伙伴。")
         return
 
+    bound_map = api_knowledge_map(user_id)
     for item in characters:
         with st.container(border=True):
             col1, col2 = st.columns([5, 1])
@@ -757,6 +804,24 @@ def page_characters(user_id: int) -> None:
                 st.write("人格：" + (item["personality"] or "—"))
                 st.write("擅长：" + (item["expertise"] or "—"))
                 st.write("说话方式：" + (item["speaking_style"] or "—"))
+
+                bound = bound_map.get(item["id"], [])
+                labels = [label for label, kid in options.items() if kid in bound]
+                picked = st.multiselect(
+                    "知识边界（只检索这些库）",
+                    list(options.keys()),
+                    default=labels,
+                    key="kb_of_" + str(item["id"]),
+                )
+                if st.button("保存知识边界", key="save_kb_" + str(item["id"])):
+                    api_set_character_knowledge(
+                        user_id, item["id"], [options[item2] for item2 in picked]
+                    )
+                    st.success("已保存知识边界")
+                    st.rerun()
+                st.caption(
+                    "当前：" + ("；".join(labels) if labels else "未绑定 → 检索你的全部知识库")
+                )
             with col2:
                 if st.button("删除", key="del_char_" + str(item["id"])):
                     api_delete_character(user_id, item["id"])
