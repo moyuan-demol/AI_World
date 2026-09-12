@@ -143,6 +143,51 @@ DATABASE_URL = "postgresql://用户名:密码@ep-xxx-pooler.区域.aws.neon.tech
 
 ---
 
+## 部署 React 版（根治「切换慢」与「返回键」，并与 Streamlit 版共用同一份数据）
+
+### 前置：两个前端共用同一个后端
+
+React 前端只放静态页面，**所有数据都在后端**。让 React 后端连**同一个 Neon**，
+这样 Streamlit 版与 React 版的账号、知识库、聊天记录是**同一份**（注册一次两边通用）。
+
+### B1. 部署后端到 Render
+
+1. https://render.com -> `New` -> `Blueprint` -> 选仓库 -> Apply（读取 `render.yaml`）
+2. 建好后在 `Environment` 填：
+
+```bash
+DATABASE_URL     = 你 Neon 的连接串（**与 Streamlit 版填同一条**，否则数据会分裂成两份）
+CORS_ORIGINS     = https://你的项目.pages.dev,https://aiworld.streamlit.app
+DEEPSEEK_API_KEY = 可留空（留空则访客自带 Key）
+```
+
+3. 记下后端地址：`https://ai-world-api.onrender.com`
+
+> Render 免费容器文件系统是临时的 —— **数据持久完全依赖 Neon**，不要用容器内 SQLite。
+
+### B2. 部署前端到 Cloudflare Pages
+
+1. https://dash.cloudflare.com -> `Workers & Pages` -> `Create` -> `Pages` -> `Connect to Git`
+2. 选择仓库并填：
+
+| 字段 | 值 |
+| --- | --- |
+| Framework preset | Vite |
+| Root directory | `frontend` |
+| Build command | `npm install && npm run build` |
+| Build output | `dist` |
+| 环境变量 | `VITE_API_BASE_URL = https://ai-world-api.onrender.com/api` |
+
+3. 部署后把 `https://xxx.pages.dev` 回填到 Render 的 `CORS_ORIGINS`（逗号分隔，两个前端都写）
+
+### B3. 验证（部署完把域名发我，我从公网实测）
+
+- 打开 Pages 域名 -> 应看到**登录/注册页** -> 注册一个账号
+- 上传文件 / 提问 / 圆桌 -> 与 Streamlit 版是**同一份数据**
+- 浏览器**返回键**应能在页面间后退（React 有真正的路由）
+
+---
+
 ## 常见问题
 
 **Q：为什么本地 127.0.0.1 别人打不开？**
