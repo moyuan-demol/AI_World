@@ -622,6 +622,22 @@ KNOWN_MODELS = [
     "deepseek-flash",                         # 正式标准标识
 ]
 
+# 服务商预设：{显示名: (API Base, 推荐模型列表)}
+# 选服务商会自动填入对应 Base —— 只加模型名而不填 Base 是连不上的。
+# 都是"兼容 OpenAI 协议"的地址，任一服务商都能用同一个客户端。
+PROVIDER_PRESETS: dict = {
+    "DeepSeek（默认）": ("https://api.deepseek.com", KNOWN_MODELS),
+    "智谱 GLM（BigModel）": (
+        "https://open.bigmodel.cn/api/paas/v4",
+        ["glm-4.6", "glm-4.5", "glm-4.5-air", "glm-4-plus", "glm-4-flash"],
+    ),
+    "OpenAI（GPT）": (
+        "https://api.openai.com/v1",
+        ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5-pro", "gpt-5.4-mini", "gpt-6-astra", "o3", "o4-mini"],
+    ),
+    "自定义服务商": ("", []),
+}
+
 
 def active_model_name() -> str:
     pick = (st.session_state.get("ai_model_pick") or "").strip()
@@ -806,7 +822,7 @@ def sidebar(user_id: int, username: str) -> str:
         elif settings.ai_configured:
             st.info("在线：使用站点配置的 DeepSeek Key（所有访客共用）")
         else:
-            st.warning("离线演示模式：回答为本地占位内容")
+            st.caption("离线演示模式：本地占位回答")
         st.write("模型：" + active_model_name())
         st.write("文本向量：" + active_embedding_label())
         st.write(
@@ -903,10 +919,22 @@ def sidebar(user_id: int, username: str) -> str:
                 "清空即恢复默认。"
             )
             st.text_input("API Key", type="password", key="ai_key", placeholder="sk-...")
-            st.text_input("API Base（兼容 OpenAI 协议）", key="ai_base", placeholder="https://api.deepseek.com")
-            if "ai_model_pick" not in st.session_state:
-                st.session_state.ai_model_pick = settings.deepseek_model
-            st.selectbox("模型", KNOWN_MODELS + ["自定义"], key="ai_model_pick")
+            preset = st.selectbox("服务商", list(PROVIDER_PRESETS.keys()), key="ai_provider")
+            preset_base, preset_models = PROVIDER_PRESETS[preset]
+            st.text_input(
+                "API Base（兼容 OpenAI 协议）",
+                key="ai_base",
+                placeholder=preset_base or "https://你的服务地址/v1",
+                help="选择服务商后会自动填入；也可手动改成任何兼容 OpenAI 协议（以 /v1 结尾或 /v4）的地址。",
+            )
+            if preset_base and not (st.session_state.get("ai_base") or "").strip():
+                st.session_state.ai_base = preset_base
+
+            model_options = list(preset_models) + ["自定义"]
+            if st.session_state.get("ai_model_pick") not in model_options:
+                # 换服务商后，原来选的模型不在新列表里 -> 自动切到该服务商默认模型
+                st.session_state.ai_model_pick = model_options[0]
+            st.selectbox("模型", model_options, key="ai_model_pick")
             if st.session_state.get("ai_model_pick") == "自定义":
                 st.text_input("自定义模型名", key="ai_model", placeholder="例如 your-model-name")
             st.caption(
@@ -1231,7 +1259,7 @@ def page_chat(user_id: int) -> None:
         loaded = api_load_conversation(user_id, character_id)
         st.session_state[state_key] = loaded["messages"]
         st.session_state["conv_" + str(character_id)] = loaded["conversation_id"]
-    if st.button("🗑 清空当前对话显示（服务端记录保留）"):
+    if st.button("🗑 清空当前对话显示"):
         st.session_state[state_key] = []
         st.rerun()
 
